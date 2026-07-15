@@ -43,6 +43,10 @@ class CustomerMap
                 // Natural key: a matching target customer is reused (avoids the unique-email index
                 // failure and duplicate customers when importing into another DB).
                 'unique_key' => ['email', 'website_id'],
+                // group_id follows the customer group matched by code on the target.
+                'references' => [
+                    ['column' => 'group_id', 'table' => 'customer_group'],
+                ],
                 'export_priority' => 10,
             ],
             'customer_grid_flat' => [
@@ -73,9 +77,10 @@ class CustomerMap
                 'primary_key' => 'entity_id',
                 'relationship_type' => TableDefinitionInterface::RELATION_DIRECT,
                 'customer_column' => 'customer_id',
-                // customer_id must follow the customer's (possibly remapped) id on import.
+                // customer_id / customer_group_id must follow the customer and group on import.
                 'references' => [
                     ['column' => 'customer_id', 'table' => 'customer_entity'],
+                    ['column' => 'customer_group_id', 'table' => 'customer_group'],
                 ],
                 'export_priority' => 30,
             ],
@@ -117,9 +122,10 @@ class CustomerMap
                 'primary_key' => 'entity_id',
                 'relationship_type' => TableDefinitionInterface::RELATION_DIRECT,
                 'customer_column' => 'customer_id',
-                // An order references both its customer and the quote it was placed from.
+                // An order references its customer, its customer group, and the quote it came from.
                 'references' => [
                     ['column' => 'customer_id', 'table' => 'customer_entity'],
+                    ['column' => 'customer_group_id', 'table' => 'customer_group'],
                     ['column' => 'quote_id', 'table' => 'quote'],
                 ],
                 'export_priority' => 50,
@@ -169,6 +175,24 @@ class CustomerMap
                 'export_priority' => 60,
             ],
 
+            // --- Customer group the customer/quotes/orders belong to ---
+            // Looked up from the group ids referenced above. Exported LATE (65, after orders) so all
+            // those ids are collected, but imported FIRST (4) so group_id / customer_group_id can be
+            // remapped to the target group matched by code.
+            'customer_group' => [
+                'table' => 'customer_group',
+                'primary_key' => 'customer_group_id',
+                'relationship_type' => TableDefinitionInterface::RELATION_LOOKUP,
+                'lookup_sources' => [
+                    ['table' => 'customer_entity', 'column' => 'group_id'],
+                    ['table' => 'quote', 'column' => 'customer_group_id'],
+                    ['table' => 'sales_order', 'column' => 'customer_group_id'],
+                ],
+                'unique_key' => ['customer_group_code'],
+                'export_priority' => 65,
+                'import_priority' => 4,
+            ],
+
             // --- Products referenced by cart/order items ---
             // Looked up from the product ids collected off the item tables. Exported AFTER the
             // items (so their product_ids are known) but imported BEFORE them (import_priority 5/6)
@@ -185,7 +209,46 @@ class CustomerMap
                 'export_priority' => 70,
                 'import_priority' => 5,
             ],
-        ] + $this->productChildren();
+        ]
+            + $this->productChildren()
+            // customer_entity is EAV (entity_type_id 1): custom attributes live in these value
+            // tables. Skipped on import when the customer is matched by email (target owns them).
+            + $this->eavValueTables('customer_entity', 15, 15, true)
+            // Address custom attributes. Addresses always insert as new ids, so these follow along
+            // (no skip needed — an address is never "reused").
+            + $this->eavValueTables('customer_address_entity', 25, 25, false);
+    }
+
+    /**
+     * The five EAV backend-type value tables (`<parent>_datetime|decimal|int|text|varchar`) for an
+     * EAV entity. All share the shape: PK `value_id` (auto-increment), FK `entity_id` -> parent,
+     * unique (entity_id, attribute_id). The import engine remaps `entity_id` to the parent's target
+     * id and lets `value_id` collisions allocate a fresh id.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private function eavValueTables(
+        string $parent,
+        int $exportPriority,
+        int $importPriority,
+        bool $skipIfParentReused
+    ): array {
+        $tables = [];
+        foreach (['datetime', 'decimal', 'int', 'text', 'varchar'] as $backendType) {
+            $table = $parent . '_' . $backendType;
+            $tables[$table] = [
+                'table' => $table,
+                'primary_key' => 'value_id',
+                'relationship_type' => TableDefinitionInterface::RELATION_CHILD,
+                'parent' => $parent,
+                'parent_key' => 'entity_id',
+                'foreign_key' => 'entity_id',
+                'skip_if_parent_reused' => $skipIfParentReused,
+                'export_priority' => $exportPriority,
+                'import_priority' => $importPriority,
+            ];
+        }
+        return $tables;
     }
 
     /**
@@ -200,7 +263,9 @@ class CustomerMap
         $children = [];
 
         // EAV value tables link via entity_id (community edition, no content-staging row_id).
-        foreach (['datetime', 'decimal', 'int', 'text', 'varchar'] as $backendType) {
+        // Includes 'gallery' so the full product EAV backend set is captured; each is store_id
+        // scoped, so per-store attribute/price values come across as separate rows automatically.
+        foreach (['datetime', 'decimal', 'int', 'text', 'varchar', 'gallery'] as $backendType) {
             $table = 'catalog_product_entity_' . $backendType;
             $children[$table] = [
                 'table' => $table,
@@ -246,6 +311,25 @@ class CustomerMap
             'parent' => 'catalog_product_entity',
             'parent_key' => 'entity_id',
             'foreign_key' => 'product_id',
+            'skip_if_parent_reused' => true,
+            'export_priority' => 71,
+            'import_priority' => 6,
+        ];
+
+        // Tier (group/qty) prices. entity_id -> product (auto-derived); customer_group_id -> the
+        // group matched by code. value_id is auto-increment; a fresh product id keeps the unique
+        // (entity_id, all_groups, customer_group_id, qty, website_id) tuple collision-free.
+        // website_id is NOT remapped (store_website is outside the map — must align on target).
+        $children['catalog_product_entity_tier_price'] = [
+            'table' => 'catalog_product_entity_tier_price',
+            'primary_key' => 'value_id',
+            'relationship_type' => TableDefinitionInterface::RELATION_CHILD,
+            'parent' => 'catalog_product_entity',
+            'parent_key' => 'entity_id',
+            'foreign_key' => 'entity_id',
+            'references' => [
+                ['column' => 'customer_group_id', 'table' => 'customer_group'],
+            ],
             'skip_if_parent_reused' => true,
             'export_priority' => 71,
             'import_priority' => 6,

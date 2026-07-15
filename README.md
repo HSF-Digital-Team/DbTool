@@ -123,8 +123,47 @@ around that table's rows.
 ## Notes & assumptions
 
 - No schema changes: the module only reads/writes existing tables.
-- Customer EAV attribute sub-tables (`customer_entity_varchar`, …) are **not** seeded; add them as
-  `child` entries (`foreign_key: entity_id` → `customer_entity.entity_id`) if your install keeps
-  customer attributes in EAV rather than flat columns.
-- Import expects referenced rows in tables **outside** the map (store, catalog product, customer
-  group, …) to already exist in the target DB.
+- **Customer & address EAV attribute data is captured.** `customer_entity` and
+  `customer_address_entity` are EAV entities, so their custom attributes live in the value tables
+  `customer_entity_{datetime,decimal,int,text,varchar}` and `customer_address_entity_{…}`. These are
+  seeded as `child` entries (FK `entity_id`). Customer value tables are `skip_if_parent_reused` — when
+  a customer is matched by email on the target, its attribute rows already exist there and are left
+  untouched; only a newly-inserted customer receives them.
+- **Customer group is synced.** `customer_group` is a `lookup` gathered from the group ids referenced
+  by the customer/quotes/orders. On import it is **matched by `customer_group_code`** to reuse the
+  target's group id (standard groups always match; a custom group inserts with a fresh id), and
+  `customer_entity.group_id` / `quote`.`customer_group_id` / `sales_order`.`customer_group_id` are
+  remapped to it. It exports late (after orders) but imports first — the split-priority pattern.
+- **Product tier prices are synced.** `catalog_product_entity_tier_price` is a product `child`
+  (`skip_if_parent_reused`), so existing products keep their tier prices and only a stub-inserted
+  (missing-sku) product receives them; `customer_group_id` on each row is remapped to the matched
+  group. `website_id` is **not** remapped — like `store_id`, `store_website` is a referenced global
+  table that must already align on the target.
+- **The product EAV value set is complete and store-scoped.** All six backends are captured —
+  `catalog_product_entity_{datetime,decimal,int,text,varchar,gallery}`. These tables are keyed by
+  `store_id`, and the export applies **no store filter** (it pulls every row for the product id), so
+  **per-store attribute and price overrides** (e.g. a store-specific `special_price` in
+  `catalog_product_entity_decimal`) all come across as separate rows automatically.
+- Import expects referenced rows in tables **outside** the map (store, website, tax class, …) to
+  already exist in the target DB.
+
+### Not synced by default (opt-in — not EAV value data)
+
+The following product tables are intentionally excluded; add them if a use case needs them:
+
+- **Custom options + per-store option pricing** (`catalog_product_option` → `_price`/`_title`/
+  `_type_value` → `_type_price`/`_type_title`). Multi-level children; needs a "cascade skip" so
+  grandchild rows skip when the product was matched on the target.
+- **`ecomeu_familyset_tier_price`** — this store's custom per-store quantity-break pricing. Keyed by
+  the `familyset_code` product attribute value (not `product_id`), so it needs a dedicated
+  lookup-by-attribute-value step.
+- **Bundle selection pricing**, **media gallery** (references image files on disk), and product
+  **composition/placement** (`catalog_product_link*`, `catalog_product_super_*`,
+  `catalog_product_relation`, `catalog_category_product`) — the latter reference other products and
+  categories, expanding a per-customer export toward a full-catalog export.
+
+> **EAV `attribute_id` cross-DB caveat:** EAV value rows (customer, address, product) carry
+> `attribute_id`. Stock attributes share ids across standard installs, but a **custom** attribute can
+> have a different `attribute_id` in another database — importing its value rows there would misfile
+> them under the wrong attribute. When migrating custom attributes across environments, verify the
+> attribute ids line up (or use `scripts/db-sync-gui/`, which syncs the EAV attribute definitions).
