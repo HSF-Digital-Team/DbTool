@@ -1,0 +1,110 @@
+<?php
+declare(strict_types=1);
+
+namespace Tool\DbTool\Api\Data;
+
+/**
+ * Immutable description of one table in the customer data map.
+ *
+ * This is the single unit the export/import engine interprets: it declares which table to
+ * process, how that table is related to the customer, and where it sits in the processing order.
+ */
+interface TableDefinitionInterface
+{
+    /** Relationship types. */
+    public const RELATION_DIRECT = 'direct';
+    public const RELATION_CHILD = 'child';
+    public const RELATION_LOOKUP = 'lookup';
+
+    /**
+     * Table name (without DB prefix; resolved through ResourceConnection::getTableName()).
+     */
+    public function getTable(): string;
+
+    /**
+     * Primary key column of this table (e.g. "entity_id").
+     */
+    public function getPrimaryKey(): string;
+
+    /**
+     * Relationship type: self::RELATION_DIRECT, self::RELATION_CHILD or self::RELATION_LOOKUP.
+     */
+    public function getRelationshipType(): string;
+
+    /**
+     * For a DIRECT relationship: the column that equals the customer id
+     * (e.g. "entity_id" on customer_entity, "customer_id" on quote/sales_order). Null otherwise.
+     */
+    public function getCustomerColumn(): ?string;
+
+    /**
+     * For a CHILD relationship: the parent table name. Null otherwise.
+     */
+    public function getParent(): ?string;
+
+    /**
+     * For a CHILD relationship: the column in the parent whose values this table references
+     * (usually the parent's primary key). Null otherwise.
+     */
+    public function getParentKey(): ?string;
+
+    /**
+     * For a CHILD relationship: the column in THIS table that points at parent.parentKey. Null otherwise.
+     */
+    public function getForeignKey(): ?string;
+
+    /**
+     * Ordering weight for export (parents low, children high).
+     */
+    public function getExportPriority(): int;
+
+    /**
+     * Ordering weight for import (parents must precede children to satisfy FK constraints).
+     */
+    public function getImportPriority(): int;
+
+    /**
+     * Optional extra WHERE conditions, each entry ['column op ?' => value] (bound safely).
+     *
+     * @return array<string, mixed>
+     */
+    public function getFilter(): array;
+
+    /**
+     * Optional FQCN of a Tool\DbTool\Api\TableProcessorInterface for special handling. Null if none.
+     */
+    public function getProcessor(): ?string;
+
+    /**
+     * For a LOOKUP relationship: where to gather this table's ids from, as a list of
+     * ['table' => other mapped table, 'column' => its column]. Rows are those whose primary key
+     * appears in the union of those collected column values. Empty for non-lookup tables.
+     *
+     * @return array<int, array{table: string, column: string}>
+     */
+    public function getLookupSources(): array;
+
+    /**
+     * Foreign-key columns that must be remapped on import, each ['column' => local column,
+     * 'table' => referenced mapped table]. Includes the auto-derived child->parent reference plus
+     * any explicit cross-links declared in the map.
+     *
+     * @return array<int, array{column: string, table: string}>
+     */
+    public function getReferences(): array;
+
+    /**
+     * Natural/business key columns used on import to detect an equivalent row already present on
+     * the target (e.g. ["email", "website_id"] or ["sku"]). Empty when the table has none.
+     *
+     * @return string[]
+     */
+    public function getUniqueKey(): array;
+
+    /**
+     * When true, this (child) table's rows are skipped on import if their parent row was matched to
+     * an already-existing target row — used for sub-data (product EAV/stock/website, customer grid)
+     * that the target already owns.
+     */
+    public function isSkipIfParentReused(): bool;
+}

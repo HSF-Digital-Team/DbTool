@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+    <preference for="Tool\DbTool\Api\MapProviderInterface" type="Tool\DbTool\Model\MapProvider"/>
+    <type name="Magento\Framework\Console\CommandList">
+        <arguments>
+            <argument name="commands" xsi:type="array">
+                <item name="tool_export_specialcustomer" xsi:type="object">Tool\DbTool\Console\Command\ExportSpecialCustomerCommand</item>
+                <item name="tool_import_specialcustomer" xsi:type="object">Tool\DbTool\Console\Command\ImportSpecialCustomerCommand</item>
+            </argument>
+        </arguments>
+    </type>
+    <!--
+        Other modules extend the customer data map without touching this module by injecting
+        additional table definitions here, e.g.:
+
+        <type name="Tool\DbTool\Model\MapProvider">
+            <arguments>
+                <argument name="tables" xsi:type="array">
+                    <item name="my_table" xsi:type="array">
+                        <item name="table" xsi:type="string">my_custom_table</item>
+                        <item name="primary_key" xsi:type="string">entity_id</item>
+                        <item name="relationship_type" xsi:type="string">child</item>
+                        <item name="parent" xsi:type="string">customer_entity</item>
+                        <item name="parent_key" xsi:type="string">entity_id</item>
+                        <item name="foreign_key" xsi:type="string">customer_id</item>
+                        <item name="export_priority" xsi:type="number">100</item>
+                        <item name="import_priority" xsi:type="number">100</item>
+                    </item>
+                </argument>
+            </arguments>
+        </type>
+    -->
+</config>

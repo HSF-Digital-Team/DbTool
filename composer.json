@@ -1,0 +1,17 @@
+{
+    "name": "tool/module-dbtool",
+    "description": "Generic, configuration-driven export/import of a single customer's complete database footprint",
+    "type": "magento2-module",
+    "license": "MIT",
+    "require": {
+        "ext-zip": "*"
+    },
+    "autoload": {
+        "files": [
+            "registration.php"
+        ],
+        "psr-4": {
+            "Tool\\DbTool\\": ""
+        }
+    }
+}
