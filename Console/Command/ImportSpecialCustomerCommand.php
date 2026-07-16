@@ -19,6 +19,9 @@ use Tool\DbTool\Model\Import\Importer;
 class ImportSpecialCustomerCommand extends Command
 {
     private const OPTION_CUSTOMER_ID = 'customer_id';
+    private const OPTION_MODE = 'mode';
+    private const MODE_RESTORE = 'restore';
+    private const MODE_CLONE = 'clone';
 
     private Importer $importer;
     private State $appState;
@@ -39,6 +42,14 @@ class ImportSpecialCustomerCommand extends Command
                 null,
                 InputOption::VALUE_REQUIRED,
                 'The customer entity id to import'
+            )
+            ->addOption(
+                self::OPTION_MODE,
+                null,
+                InputOption::VALUE_OPTIONAL,
+                'Execution mode: "restore" (default; match & reuse existing rows) or '
+                . '"clone" (force-create a NEW customer + footprint with regenerated email/order numbers)',
+                self::MODE_RESTORE
             );
         parent::configure();
     }
@@ -52,16 +63,31 @@ class ImportSpecialCustomerCommand extends Command
         }
         $customerId = (int)$customerId;
 
+        $mode = (string)($input->getOption(self::OPTION_MODE) ?? self::MODE_RESTORE);
+        if (!in_array($mode, [self::MODE_RESTORE, self::MODE_CLONE], true)) {
+            $output->writeln(sprintf('<error>--mode must be "%s" or "%s".</error>', self::MODE_RESTORE, self::MODE_CLONE));
+            return Command::FAILURE;
+        }
+        $cloneMode = $mode === self::MODE_CLONE;
+
         $this->ensureAreaCode();
 
-        $output->writeln(sprintf('<info>Importing customer %d...</info>', $customerId));
+        if ($cloneMode) {
+            $output->writeln(sprintf(
+                '<info>Cloning customer %d as a NEW customer (email + order numbers will be regenerated)...</info>',
+                $customerId
+            ));
+        } else {
+            $output->writeln(sprintf('<info>Importing customer %d...</info>', $customerId));
+        }
 
         try {
             $result = $this->importer->import(
                 $customerId,
                 static function (string $table, int $count, string $status) use ($output): void {
                     $output->writeln(sprintf('  %-28s %-8s %d row(s)', $table, $status, $count));
-                }
+                },
+                $cloneMode
             );
         } catch (\Throwable $e) {
             $output->writeln('<error>Import failed: ' . $e->getMessage() . '</error>');
@@ -73,6 +99,15 @@ class ImportSpecialCustomerCommand extends Command
             $total, count($result['tables']), $result['directory']));
         if ($result['skipped'] !== []) {
             $output->writeln('<comment>Skipped (no CSV present): ' . implode(', ', $result['skipped']) . '</comment>');
+        }
+        if ($cloneMode) {
+            $newIds = $result['new_customer_ids'] ?? [];
+            $output->writeln(sprintf(
+                '<info>Clone token: %s — new customer id(s): %s (email suffix "+clone-%s")</info>',
+                (string)$result['clone_token'],
+                $newIds === [] ? '(none)' : implode(', ', $newIds),
+                (string)$result['clone_token']
+            ));
         }
 
         return Command::SUCCESS;

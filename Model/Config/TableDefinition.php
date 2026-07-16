@@ -182,4 +182,22 @@ class TableDefinition implements TableDefinitionInterface
     {
         return !empty($this->data['skip_if_parent_reused']);
     }
+
+    public function isCloneNew(): bool
+    {
+        return !empty($this->data['clone_new']);
+    }
+
+    public function getCloneRegenerate(): array
+    {
+        $map = $this->data['clone_regenerate'] ?? [];
+        if (!is_array($map)) {
+            return [];
+        }
+        $normalized = [];
+        foreach ($map as $column => $strategy) {
+            $normalized[(string)$column] = (string)$strategy;
+        }
+        return $normalized;
+    }
 }

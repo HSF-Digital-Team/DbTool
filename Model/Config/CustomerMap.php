@@ -47,6 +47,10 @@ class CustomerMap
                 'references' => [
                     ['column' => 'group_id', 'table' => 'customer_group'],
                 ],
+                // Clone mode: force a brand-new customer (skip the email match) and give it a unique
+                // email so the (email, website_id) unique index is not violated.
+                'clone_new' => true,
+                'clone_regenerate' => ['email' => 'email_suffix'],
                 'export_priority' => 10,
             ],
             'customer_grid_flat' => [
@@ -59,6 +63,8 @@ class CustomerMap
                 // The grid row shares the customer's id (non-auto PK) and is rebuildable by reindex;
                 // skip it when the customer already exists on target.
                 'skip_if_parent_reused' => true,
+                // Clone mode: keep the grid email consistent with the cloned customer's new email.
+                'clone_regenerate' => ['email' => 'email_suffix'],
                 'export_priority' => 20,
             ],
             'customer_address_entity' => [
@@ -70,7 +76,22 @@ class CustomerMap
                 'foreign_key' => 'parent_id',
                 'export_priority' => 20,
             ],
-
+            // --- Contract ---
+            // contrat_aladin_clients has NO surrogate PK/auto-increment; its identity is the
+            // globally-unique int `contrat_client`. Declare it so an existing contract is matched &
+            // reused (avoids the CONTRAT_ALADIN_CLIENTS_CONTRAT_CLIENT_CUSTOMER_ID 1062 collision).
+            'contract' => [
+                'table' => 'contrat_aladin_clients',
+                'primary_key' => 'contrat_client',
+                'relationship_type' => TableDefinitionInterface::RELATION_CHILD,
+                'parent' => 'customer_entity',
+                'parent_key' => 'entity_id',
+                'foreign_key' => 'customer_id',
+                'customer_column' => 'customer_id',
+                'unique_key' => ['contrat_client'],
+                'clone_new' => true,
+                'export_priority' => 25,
+            ],
             // --- Quotes (carts) ---
             'quote' => [
                 'table' => 'quote',
@@ -100,11 +121,28 @@ class CustomerMap
                 'parent' => 'quote',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'quote_id',
-                // product_id is remapped to the target product matched by sku.
+                // product_id -> target product (by sku); parent_item_id is a self-link (configurable/
+                // bundle parent line) remapped to the parent item's new id.
+                'references' => [
+                    ['column' => 'product_id', 'table' => 'catalog_product_entity'],
+                    ['column' => 'parent_item_id', 'table' => 'quote_item'],
+                ],
+                'export_priority' => 40,
+            ],
+            // Per-item option payload (info_buyRequest, attributes, simple_product, bundle/custom
+            // options) — required for configurable/bundle cart lines to keep their selection.
+            'quote_item_option' => [
+                'table' => 'quote_item_option',
+                'primary_key' => 'option_id',
+                'relationship_type' => TableDefinitionInterface::RELATION_CHILD,
+                'parent' => 'quote_item',
+                'parent_key' => 'item_id',
+                'foreign_key' => 'item_id',
                 'references' => [
                     ['column' => 'product_id', 'table' => 'catalog_product_entity'],
                 ],
-                'export_priority' => 40,
+                'export_priority' => 41,
+                'import_priority' => 41,
             ],
             'quote_payment' => [
                 'table' => 'quote_payment',
@@ -122,12 +160,20 @@ class CustomerMap
                 'primary_key' => 'entity_id',
                 'relationship_type' => TableDefinitionInterface::RELATION_DIRECT,
                 'customer_column' => 'customer_id',
+                // An order number is a business identity (unique per store). If the target already
+                // has it, match & reuse the existing order instead of inserting a duplicate — this
+                // avoids the SALES_ORDER_INCREMENT_ID_STORE_ID (1062) collision on re-import.
+                'unique_key' => ['increment_id', 'store_id'],
                 // An order references its customer, its customer group, and the quote it came from.
                 'references' => [
                     ['column' => 'customer_id', 'table' => 'customer_entity'],
                     ['column' => 'customer_group_id', 'table' => 'customer_group'],
                     ['column' => 'quote_id', 'table' => 'quote'],
                 ],
+                // Clone mode: force a new order (skip the increment_id match) with a unique
+                // increment_id so (increment_id, store_id) is not violated.
+                'clone_new' => true,
+                'clone_regenerate' => ['increment_id' => 'suffix'],
                 'export_priority' => 50,
             ],
             'sales_order_address' => [
@@ -137,6 +183,9 @@ class CustomerMap
                 'parent' => 'sales_order',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'parent_id',
+                // Skip when the order was matched to an existing one on the target (it already has
+                // its addresses/items/payments/grid).
+                'skip_if_parent_reused' => true,
                 'export_priority' => 60,
             ],
             'sales_order_item' => [
@@ -146,11 +195,14 @@ class CustomerMap
                 'parent' => 'sales_order',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'order_id',
-                // product_id -> target product (by sku); quote_item_id -> the remapped quote item.
+                // product_id -> target product (by sku); quote_item_id -> the remapped quote item;
+                // parent_item_id is a self-link (configurable/bundle parent line).
                 'references' => [
                     ['column' => 'product_id', 'table' => 'catalog_product_entity'],
                     ['column' => 'quote_item_id', 'table' => 'quote_item'],
+                    ['column' => 'parent_item_id', 'table' => 'sales_order_item'],
                 ],
+                'skip_if_parent_reused' => true,
                 'export_priority' => 60,
             ],
             'sales_order_payment' => [
@@ -160,6 +212,7 @@ class CustomerMap
                 'parent' => 'sales_order',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'parent_id',
+                'skip_if_parent_reused' => true,
                 'export_priority' => 60,
             ],
             'sales_order_grid' => [
@@ -172,6 +225,10 @@ class CustomerMap
                 'references' => [
                     ['column' => 'customer_id', 'table' => 'customer_entity'],
                 ],
+                'skip_if_parent_reused' => true,
+                // Clone mode: mirror the cloned order's new increment_id (it has its own composite
+                // unique on (increment_id, store_id)).
+                'clone_regenerate' => ['increment_id' => 'suffix'],
                 'export_priority' => 60,
             ],
 

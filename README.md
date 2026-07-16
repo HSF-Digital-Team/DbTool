@@ -15,6 +15,9 @@ bin/magento Tool:export:specialcustomer --customer_id=564321
 
 # Import <- var/import/specialcustomer/<customer_id>/*.csv
 bin/magento Tool:import:specialcustomer --customer_id=564321
+
+# Import as a brand-new customer (does not touch the existing one)
+bin/magento Tool:import:specialcustomer --customer_id=564321 --mode=clone
 ```
 
 - Each table becomes its own CSV (`customer_entity.csv`, `quote.csv`, `sales_order_item.csv`, …),
@@ -24,6 +27,24 @@ bin/magento Tool:import:specialcustomer --customer_id=564321
 - Import **remaps ids on collision**: if a primary key is already taken on the target it inserts a
   new row with a fresh id and rewrites all foreign keys so the parent/child graph stays linked.
   Move exported files into `var/import/specialcustomer/<id>/` to import.
+
+### Import modes (`--mode`)
+
+- **`restore`** (default) — match & reuse existing rows: a customer already present (by
+  `email`+`website_id`), a product (by `sku`), an order (by `increment_id`+`store_id`) is reused, not
+  duplicated. Importing a footprint back into a DB that already has it therefore creates nothing.
+- **`clone`** — **force-create a brand-new customer** and their whole footprint (addresses, quotes,
+  orders + children) as fresh rows, leaving the existing customer untouched. Shared catalog data is
+  still reused: products (`sku`) and customer group (`code`) are matched, not cloned. Because
+  `customer_entity` and `sales_order`/`sales_order_grid` have unique business keys, clone mode
+  **regenerates** them so the inserts don't collide: the new customer's `email` becomes
+  `local+clone-<token>@domain` and each order's `increment_id` becomes `<value>-<token>`, where
+  `<token>` is a short per-run id (printed at the end so you can find the copy). Clone mode is
+  **non-idempotent** — each run produces another distinct customer.
+
+  Which tables are cloned vs reused is config-driven: `clone_new` (skip the reuse match, always
+  insert) is set on `customer_entity` and `sales_order`; `clone_regenerate` (column → strategy) makes
+  their unique keys unique. See those fields in the map table below.
 
 ## The Customer Data Map
 
@@ -44,6 +65,8 @@ The default map lives in `Model/Config/CustomerMap.php`. Each entry describes on
 | `references`         | no                  | FK columns to remap on import: `[{column, table}, …]` where `table` is another mapped table. The child→parent link is auto-derived; declare only cross-links. |
 | `unique_key`         | no                  | Natural key columns (e.g. `[email, website_id]`, `[sku]`). A matching target row is reused instead of inserted. |
 | `skip_if_parent_reused` | no               | Child rows are skipped on import when their parent matched an existing target row (product sub-data, customer grid). |
+| `clone_new`          | no                  | `--mode=clone` only: skip the `unique_key` reuse match and always insert a fresh row (force-create). Set on `customer_entity`, `sales_order`. |
+| `clone_regenerate`   | no                  | `--mode=clone` only: `column => strategy` map rewriting unique business keys before insert. Strategies: `email_suffix`, `suffix`. |
 | `filter`             | no                  | Extra WHERE conditions, `['column op ?' => value]`, bound safely. |
 | `processor`          | no                  | FQCN implementing `Tool\DbTool\Api\TableProcessorInterface` for special handling. |
 
@@ -81,13 +104,28 @@ stub-inserted (missing-sku) product receives them.
 > DB duplicates entities that have no `unique_key` (orders, quotes). The intended target is a
 > *different* DB. Customers (`email`) and products (`sku`) are matched and never duplicated.
 
-> **Secondary unique keys:** the engine only remaps the primary key. A row is inserted with its
-> other columns intact, so a *secondary* unique index can still collide — e.g. `sales_order`
-> preserves `increment_id`, which is unique per store, so importing an order whose `increment_id`
-> already exists on the target aborts that table. This is expected only when the target already
-> holds a row with that business key (e.g. re-importing into the source DB, or overlapping order
-> sequences); a genuine restore target does not. Edit the CSV or add a `processor` to rewrite such a
-> column if you must import into a colliding target.
+> **Secondary unique keys:** the engine remaps the primary key but inserts other columns intact, so a
+> *secondary* unique index could otherwise collide. The known case, `sales_order`, is handled: it has
+> `unique_key => ['increment_id', 'store_id']`, so an order already present on the target (same order
+> number) is **matched and reused** instead of re-inserted, and its children
+> (`sales_order_address`/`_item`/`_payment`/`_grid`) are `skip_if_parent_reused`. This makes order
+> import idempotent and avoids the `SALES_ORDER_INCREMENT_ID_STORE_ID` (1062) error.
+>
+> Matching is by `(increment_id, store_id)`: if two *different* databases reuse the same order-number
+> sequence for different orders, an incoming order could match an unrelated target order and be
+> skipped — inherent to using the order number as identity; the intended target is a restore/copy or a
+> DB that doesn't already hold this customer's orders. If a *new* table hits the same class of problem,
+> give it a `unique_key` (to match/reuse) the same way. Note `quote` has no natural key, so re-importing
+> into the source DB still duplicates carts (a limitation, not a crash).
+
+> **Tables with no surrogate primary key:** some tables identify a row by a business column rather than
+> an auto-increment id (e.g. `contrat_aladin_clients`, whose identity is the unique `int`
+> `contrat_client`, with no PK/auto-increment at all). For these, set **both** `primary_key` and
+> `unique_key` to that business key — `primary_key => 'contrat_client'`, `unique_key => ['contrat_client']`.
+> `primary_key` must name a real column (the engine's match query selects it; the `entity_id` default
+> would error), and `unique_key` makes an existing row matched & reused rather than re-inserted (which
+> would hit its 1062). In `--mode=clone` such a row is matched (not cloned) — minting a new business id
+> (and any dependent rows) is out of scope.
 
 ## Extending the map from another module
 
@@ -144,6 +182,14 @@ around that table's rows.
   `store_id`, and the export applies **no store filter** (it pulls every row for the product id), so
   **per-store attribute and price overrides** (e.g. a store-specific `special_price` in
   `catalog_product_entity_decimal`) all come across as separate rows automatically.
+- **Configurable/bundle cart lines keep their selection.** A configurable/bundle cart line is a
+  parent + child `quote_item` pair (linked by `parent_item_id`, a self-reference the engine remaps),
+  and the chosen options live in `quote_item_option` (info_buyRequest / attributes / simple_product /
+  bundle & custom-option values) — both are synced. (Orders keep options inline on
+  `sales_order_item.product_options`.) **Caveat:** those option payloads are *serialized* and embed
+  product/attribute ids that are **not** rewritten. This is fine for same-DB restore/clone (products
+  are matched by `sku` to the same rows, so the embedded ids stay valid); on a *cross-DB* import where
+  a sku has a different `product_id`, an embedded selection can be stale.
 - Import expects referenced rows in tables **outside** the map (store, website, tax class, …) to
   already exist in the target DB.
 
@@ -161,6 +207,12 @@ The following product tables are intentionally excluded; add them if a use case 
   **composition/placement** (`catalog_product_link*`, `catalog_product_super_*`,
   `catalog_product_relation`, `catalog_category_product`) — the latter reference other products and
   categories, expanding a per-customer export toward a full-catalog export.
+- **Order documents & extras** — `sales_invoice`/`sales_creditmemo`/`sales_shipment` (+ their
+  `_item`/`_comment`/`_track`/`_grid`), `sales_order_status_history`, `sales_order_tax` (+ `_tax_item`),
+  `sales_payment_transaction`, and `gift_message`. Each fits the existing patterns (`child` +
+  `references`; documents get `unique_key => ['increment_id','store_id']`; grids
+  `skip_if_parent_reused`). Also guest/multishipping/ephemeral: `quote_id_mask`, `quote_address_item`,
+  `quote_shipping_rate`.
 
 > **EAV `attribute_id` cross-DB caveat:** EAV value rows (customer, address, product) carry
 > `attribute_id`. Stock attributes share ids across standard installs, but a **custom** attribute can

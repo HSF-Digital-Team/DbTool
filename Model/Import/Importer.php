@@ -6,6 +6,7 @@ namespace Tool\DbTool\Model\Import;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\Exception\LocalizedException;
+use Magento\Framework\Math\Random;
 use Magento\Framework\Phrase;
 use Tool\DbTool\Api\Data\TableDefinitionInterface;
 use Tool\DbTool\Api\MapProviderInterface;
@@ -32,17 +33,20 @@ class Importer
     private MapProviderInterface $mapProvider;
     private ProcessorProvider $processorProvider;
     private CsvStorage $storage;
+    private Random $random;
 
     public function __construct(
         ResourceConnection $resourceConnection,
         MapProviderInterface $mapProvider,
         ProcessorProvider $processorProvider,
-        CsvStorage $storage
+        CsvStorage $storage,
+        Random $random
     ) {
         $this->resourceConnection = $resourceConnection;
         $this->mapProvider = $mapProvider;
         $this->processorProvider = $processorProvider;
         $this->storage = $storage;
+        $this->random = $random;
     }
 
     /**
@@ -50,10 +54,13 @@ class Importer
      *
      * @param int $customerId
      * @param callable|null $progress fn(string $table, int $written, string $status): void
-     * @return array{directory: string, tables: array<string, int>, skipped: string[], remapped: int}
+     * @param bool $cloneMode when true, force-create a new customer (+footprint) instead of matching
+     *                        and reusing an existing one; unique business keys are regenerated
+     * @return array{directory: string, tables: array<string, int>, skipped: string[], remapped: int,
+     *               clone_token: ?string, new_customer_ids: array<int, mixed>}
      * @throws LocalizedException
      */
-    public function import(int $customerId, ?callable $progress = null): array
+    public function import(int $customerId, ?callable $progress = null, bool $cloneMode = false): array
     {
         $absoluteDir = $this->storage->getImportDir($customerId);
         if (!$this->storage->dirExists($absoluteDir)) {
@@ -62,6 +69,10 @@ class Importer
                 [$absoluteDir]
             ));
         }
+
+        // One token per run so every regenerated value (order + its grid, customer + its grid) is
+        // consistent, while re-running clone produces a fresh, distinct copy.
+        $cloneToken = $cloneMode ? strtolower($this->random->getRandomString(6)) : '';
 
         $connection = $this->resourceConnection->getConnection();
         $results = [];
@@ -96,7 +107,7 @@ class Importer
                 $rows = $processor->processImportRows($table, $rows);
             }
 
-            $stats = $this->writeTable($connection, $definition, $rows, $idMap, $reused);
+            $stats = $this->writeTable($connection, $definition, $rows, $idMap, $reused, $cloneMode, $cloneToken);
             $results[$table] = $stats['written'];
             $remappedTotal += $stats['remapped'];
 
@@ -110,6 +121,8 @@ class Importer
             'tables' => $results,
             'skipped' => $skipped,
             'remapped' => $remappedTotal,
+            'clone_token' => $cloneMode ? $cloneToken : null,
+            'new_customer_ids' => array_values($idMap['customer_entity'] ?? []),
         ];
     }
 
@@ -121,14 +134,18 @@ class Importer
      * @param array<int, array<string, mixed>> $rows
      * @param array<string, array<string, mixed>> $idMap  by-ref, accumulated across tables
      * @param array<string, array<string, bool>> $reused  by-ref, accumulated across tables
-     * @return array{written: int, remapped: int, matched: int, skipped: int}
+     * @param bool $cloneMode force-new mode
+     * @param string $cloneToken per-run token used to regenerate unique business keys
+     * @return array{written: int, remapped: int, matched: int, skipped: int, cloned: bool}
      */
     private function writeTable(
         AdapterInterface $connection,
         TableDefinitionInterface $definition,
         array $rows,
         array &$idMap,
-        array &$reused
+        array &$reused,
+        bool $cloneMode = false,
+        string $cloneToken = ''
     ): array {
         $table = $definition->getTable();
         $tableName = $connection->getTableName($table);
@@ -136,10 +153,26 @@ class Importer
         $columns = array_keys($describe);
         $pk = $definition->getPrimaryKey();
         $pkIsIdentity = !empty($describe[$pk]['IDENTITY']);
-        $references = $definition->getReferences();
+        // External references are remapped in the prep phase; self-references (a FK back into this
+        // same table, e.g. a configurable/bundle parent_item_id) are remapped in the insert loop
+        // once the parent row's new id is known.
+        $references = [];
+        $selfReferences = [];
+        foreach ($definition->getReferences() as $reference) {
+            if ($reference['table'] === $table) {
+                $selfReferences[] = $reference['column'];
+            } else {
+                $references[] = $reference;
+            }
+        }
         $uniqueKey = $definition->getUniqueKey();
         $parentTable = $definition->getParent();
         $foreignKey = $definition->getForeignKey();
+
+        // Clone mode: force this entity to be created new (skip the reuse lookup) and regenerate its
+        // unique business-key columns so the inserts don't collide.
+        $cloneNew = $cloneMode && $definition->isCloneNew();
+        $cloneRegenerate = $cloneMode ? $definition->getCloneRegenerate() : [];
 
         $idMap[$table] = $idMap[$table] ?? [];
         $written = $matched = $remapped = $skippedRows = 0;
@@ -174,6 +207,13 @@ class Importer
                 }
             }
 
+            // Clone mode: rewrite unique business-key columns to fresh, consistent values.
+            foreach ($cloneRegenerate as $col => $strategy) {
+                if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== '') {
+                    $clean[$col] = $this->regenerate($strategy, (string)$clean[$col], $cloneToken);
+                }
+            }
+
             // Skip sub-data whose parent already exists on the target.
             if ($definition->isSkipIfParentReused() && $parentTable !== null && $foreignKey !== null) {
                 $parentId = $clean[$foreignKey] ?? null;
@@ -187,7 +227,17 @@ class Importer
         }
 
         if ($prepared === []) {
-            return ['written' => 0, 'remapped' => 0, 'matched' => 0, 'skipped' => $skippedRows];
+            return ['written' => 0, 'remapped' => 0, 'matched' => 0, 'skipped' => $skippedRows, 'cloned' => $cloneNew];
+        }
+
+        // For self-referential tables, insert parents (no self-FK set) before children so the
+        // child's self-FK can be remapped to the parent's freshly assigned id. Magento's
+        // configurable/bundle nesting is one level, so this ordering suffices. usort is stable (PHP 8).
+        if ($selfReferences !== []) {
+            usort($prepared, function (array $a, array $b) use ($selfReferences): int {
+                return $this->hasSelfParent($a['row'], $selfReferences)
+                    <=> $this->hasSelfParent($b['row'], $selfReferences);
+            });
         }
 
         // Preload target primary keys that are already taken among the incoming (remapped) ids,
@@ -200,8 +250,19 @@ class Importer
                 $row = $entry['row'];
                 $originalPk = $entry['original_pk'];
 
-                // 1) Reuse an equivalent existing row when a natural key is defined.
-                if ($uniqueKey !== []) {
+                // 0) Remap self-references to the parent row inserted earlier in this same loop.
+                foreach ($selfReferences as $selfColumn) {
+                    if (isset($row[$selfColumn]) && $row[$selfColumn] !== null) {
+                        $selfKey = (string)$row[$selfColumn];
+                        if (isset($idMap[$table][$selfKey])) {
+                            $row[$selfColumn] = $idMap[$table][$selfKey];
+                        }
+                    }
+                }
+
+                // 1) Reuse an equivalent existing row when a natural key is defined — unless clone
+                //    mode forces a brand-new row for this entity.
+                if ($uniqueKey !== [] && !$cloneNew) {
                     $existingPk = $this->findByUniqueKey($connection, $tableName, $pk, $uniqueKey, $row);
                     if ($existingPk !== null) {
                         if ($originalPk !== null) {
@@ -239,7 +300,48 @@ class Importer
             throw $e;
         }
 
-        return ['written' => $written, 'remapped' => $remapped, 'matched' => $matched, 'skipped' => $skippedRows];
+        return [
+            'written' => $written,
+            'remapped' => $remapped,
+            'matched' => $matched,
+            'skipped' => $skippedRows,
+            'cloned' => $cloneNew,
+        ];
+    }
+
+    /**
+     * 1 when the row sets any self-reference column (a child), 0 when none are set (a parent) —
+     * used to order parents before children for self-referential tables.
+     *
+     * @param array<string, mixed> $row
+     * @param string[] $selfReferences
+     */
+    private function hasSelfParent(array $row, array $selfReferences): int
+    {
+        foreach ($selfReferences as $column) {
+            if (isset($row[$column]) && $row[$column] !== null && $row[$column] !== '') {
+                return 1;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Rewrite a unique business-key value to a fresh, deterministic-per-run value so clone-mode
+     * inserts don't violate a unique index.
+     *
+     * @param string $strategy "email_suffix" | "suffix"
+     */
+    private function regenerate(string $strategy, string $value, string $token): string
+    {
+        if ($strategy === 'email_suffix') {
+            $at = strrpos($value, '@');
+            if ($at !== false) {
+                return substr($value, 0, $at) . '+clone-' . $token . substr($value, $at);
+            }
+        }
+        // Default "suffix" (and email fallback when there is no @).
+        return $value . '-' . $token;
     }
 
     /**
@@ -307,7 +409,8 @@ class Importer
     {
         $parts = [];
         if ($stats['written'] > 0) {
-            $parts[] = 'imported' . ($stats['remapped'] > 0 ? " ({$stats['remapped']} new id)" : '');
+            $verb = !empty($stats['cloned']) ? 'cloned' : 'imported';
+            $parts[] = $verb . ($stats['remapped'] > 0 ? " ({$stats['remapped']} new id)" : '');
         }
         if ($stats['matched'] > 0) {
             $parts[] = "matched {$stats['matched']}";

@@ -107,4 +107,21 @@ interface TableDefinitionInterface
      * that the target already owns.
      */
     public function isSkipIfParentReused(): bool;
+
+    /**
+     * When true, clone-mode import skips the unique_key reuse lookup for this table and always
+     * inserts a fresh row — used to force-create a new customer/order instead of matching an
+     * existing one. Ignored in the default (restore) mode.
+     */
+    public function isCloneNew(): bool;
+
+    /**
+     * Columns whose values must be rewritten to unique values in clone mode (to avoid the table's
+     * unique-index collisions), as a map of column => strategy. Supported strategies:
+     * "email_suffix" (insert +clone-<token> into the local part) and "suffix" (append -<token>).
+     * Empty when the table needs no regeneration.
+     *
+     * @return array<string, string>
+     */
+    public function getCloneRegenerate(): array;
 }
