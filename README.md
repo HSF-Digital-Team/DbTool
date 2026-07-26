@@ -16,8 +16,15 @@ bin/magento Tool:export:specialcustomer --customer_id=564321
 # Import <- var/import/specialcustomer/<customer_id>/*.csv
 bin/magento Tool:import:specialcustomer --customer_id=564321
 
-# Import as a brand-new customer (does not touch the existing one)
+# Import as a brand-new customer with a FRESH entity_id (e.g. prod data into local dev)
 bin/magento Tool:import:specialcustomer --customer_id=564321 --mode=clone
+```
+
+Every import prints the resulting customer(s) at the end, e.g.:
+
+```
+New customer: id=812  email=jane@example.com
+Clone token: k3f9zq
 ```
 
 - Each table becomes its own CSV (`customer_entity.csv`, `quote.csv`, `sales_order_item.csv`, …),
@@ -34,13 +41,21 @@ bin/magento Tool:import:specialcustomer --customer_id=564321 --mode=clone
   `email`+`website_id`), a product (by `sku`), an order (by `increment_id`+`store_id`) is reused, not
   duplicated. Importing a footprint back into a DB that already has it therefore creates nothing.
 - **`clone`** — **force-create a brand-new customer** and their whole footprint (addresses, quotes,
-  orders + children) as fresh rows, leaving the existing customer untouched. Shared catalog data is
-  still reused: products (`sku`) and customer group (`code`) are matched, not cloned. Because
-  `customer_entity` and `sales_order`/`sales_order_grid` have unique business keys, clone mode
-  **regenerates** them so the inserts don't collide: the new customer's `email` becomes
-  `local+clone-<token>@domain` and each order's `increment_id` becomes `<value>-<token>`, where
-  `<token>` is a short per-run id (printed at the end so you can find the copy). Clone mode is
-  **non-idempotent** — each run produces another distinct customer.
+  orders + children) as fresh rows, leaving the existing customer untouched. This is the mode for
+  pulling prod data into a local dev env to reproduce a case. Shared catalog data is still reused:
+  products (`sku`) and customer group (`code`) are matched, not cloned.
+  - **The customer always gets a fresh `entity_id`** (and each order a fresh `entity_id`): the
+    exported primary key is dropped and the DB allocates a new auto-increment id, even on an empty
+    dev DB where the source id was free. All foreign keys (`customer_id`, `parent_id`, `order_id`,
+    quote/EAV/grid links) are remapped onto the new ids, so the graph stays linked.
+  - **Business keys are kept when free, regenerated only on collision.** The customer's real prod
+    `email` and each order's `increment_id` are imported as-is when the target doesn't already have
+    them; only if a value would violate the unique index is it rewritten (`email` →
+    `local+clone-<token>@domain`, `increment_id` → `<value>-<token>`), where `<token>` is a short
+    per-run id. So the first clone into a fresh dev DB keeps the real email; a second clone (the
+    email now exists) gets a suffixed one.
+  - **The resulting `customer_id` + `email` are printed at the end** so you can find the copy. Clone
+    mode is **non-idempotent** — each run produces another distinct customer.
 
   Which tables are cloned vs reused is config-driven: `clone_new` (skip the reuse match, always
   insert) is set on `customer_entity` and `sales_order`; `clone_regenerate` (column → strategy) makes

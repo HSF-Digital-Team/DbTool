@@ -100,14 +100,22 @@ class ImportSpecialCustomerCommand extends Command
         if ($result['skipped'] !== []) {
             $output->writeln('<comment>Skipped (no CSV present): ' . implode(', ', $result['skipped']) . '</comment>');
         }
+        $customers = $result['new_customers'] ?? [];
+        if ($customers === []) {
+            $output->writeln('<comment>No customer row was imported.</comment>');
+        } else {
+            $label = $cloneMode ? 'New customer' : 'Customer';
+            foreach ($customers as $customer) {
+                $output->writeln(sprintf(
+                    '<info>%s: id=%s  email=%s</info>',
+                    $label,
+                    (string)$customer['id'],
+                    (string)$customer['email']
+                ));
+            }
+        }
         if ($cloneMode) {
-            $newIds = $result['new_customer_ids'] ?? [];
-            $output->writeln(sprintf(
-                '<info>Clone token: %s — new customer id(s): %s (email suffix "+clone-%s")</info>',
-                (string)$result['clone_token'],
-                $newIds === [] ? '(none)' : implode(', ', $newIds),
-                (string)$result['clone_token']
-            ));
+            $output->writeln(sprintf('<comment>Clone token: %s</comment>', (string)$result['clone_token']));
         }
 
         return Command::SUCCESS;

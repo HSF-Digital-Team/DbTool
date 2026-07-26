@@ -57,7 +57,8 @@ class Importer
      * @param bool $cloneMode when true, force-create a new customer (+footprint) instead of matching
      *                        and reusing an existing one; unique business keys are regenerated
      * @return array{directory: string, tables: array<string, int>, skipped: string[], remapped: int,
-     *               clone_token: ?string, new_customer_ids: array<int, mixed>}
+     *               clone_token: ?string, new_customer_ids: array<int, mixed>,
+     *               new_customers: array<int, array{id: mixed, email: mixed}>}
      * @throws LocalizedException
      */
     public function import(int $customerId, ?callable $progress = null, bool $cloneMode = false): array
@@ -82,6 +83,9 @@ class Importer
         // Shared across tables for the whole import.
         $idMap = [];   // table => [ (string)oldId => newId ]
         $reused = [];  // table => [ (string)targetId => true ] rows matched to existing target rows
+        // Clone-mode business-key rewrites decided on the parent (customer_entity / sales_order) and
+        // mirrored by their grid children so parent and grid stay consistent within the run.
+        $regen = [];   // column => [ (string)oldValue => newValue ]
 
         foreach ($this->mapProvider->getImportOrder() as $definition) {
             $table = $definition->getTable();
@@ -107,7 +111,7 @@ class Importer
                 $rows = $processor->processImportRows($table, $rows);
             }
 
-            $stats = $this->writeTable($connection, $definition, $rows, $idMap, $reused, $cloneMode, $cloneToken);
+            $stats = $this->writeTable($connection, $definition, $rows, $idMap, $reused, $regen, $cloneMode, $cloneToken);
             $results[$table] = $stats['written'];
             $remappedTotal += $stats['remapped'];
 
@@ -116,14 +120,40 @@ class Importer
             }
         }
 
+        $newCustomerIds = array_values($idMap['customer_entity'] ?? []);
+
         return [
             'directory' => $absoluteDir,
             'tables' => $results,
             'skipped' => $skipped,
             'remapped' => $remappedTotal,
             'clone_token' => $cloneMode ? $cloneToken : null,
-            'new_customer_ids' => array_values($idMap['customer_entity'] ?? []),
+            'new_customer_ids' => $newCustomerIds,
+            'new_customers' => $this->resolveCustomers($connection, $newCustomerIds),
         ];
+    }
+
+    /**
+     * Resolve the target customer id + email for the ids the import mapped customers onto, so the
+     * caller can tell you exactly which customer to look at (a fresh one in clone mode).
+     *
+     * @param int[]|string[] $customerIds target customer_entity ids
+     * @return array<int, array{id: mixed, email: mixed}>
+     */
+    private function resolveCustomers(AdapterInterface $connection, array $customerIds): array
+    {
+        if ($customerIds === []) {
+            return [];
+        }
+        $select = $connection->select()
+            ->from($connection->getTableName('customer_entity'), ['entity_id', 'email'])
+            ->where('entity_id IN (?)', $customerIds);
+
+        $customers = [];
+        foreach ($connection->fetchAll($select) as $row) {
+            $customers[] = ['id' => $row['entity_id'], 'email' => $row['email']];
+        }
+        return $customers;
     }
 
     /**
@@ -134,6 +164,7 @@ class Importer
      * @param array<int, array<string, mixed>> $rows
      * @param array<string, array<string, mixed>> $idMap  by-ref, accumulated across tables
      * @param array<string, array<string, bool>> $reused  by-ref, accumulated across tables
+     * @param array<string, array<string, mixed>> $regen  by-ref, clone-mode column => oldValue => newValue
      * @param bool $cloneMode force-new mode
      * @param string $cloneToken per-run token used to regenerate unique business keys
      * @return array{written: int, remapped: int, matched: int, skipped: int, cloned: bool}
@@ -144,6 +175,7 @@ class Importer
         array $rows,
         array &$idMap,
         array &$reused,
+        array &$regen,
         bool $cloneMode = false,
         string $cloneToken = ''
     ): array {
@@ -207,10 +239,17 @@ class Importer
                 }
             }
 
-            // Clone mode: rewrite unique business-key columns to fresh, consistent values.
-            foreach ($cloneRegenerate as $col => $strategy) {
-                if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== '') {
-                    $clean[$col] = $this->regenerate($strategy, (string)$clean[$col], $cloneToken);
+            // Clone mode, child of a force-new entity (e.g. a *_grid): mirror the business-key value
+            // its parent decided on (kept or regenerated), so parent and grid stay consistent. The
+            // deciding parent (clone_new) is handled at insert time below, not here.
+            if (!$cloneNew) {
+                foreach ($cloneRegenerate as $col => $strategy) {
+                    if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== '') {
+                        $mapped = $regen[$col][(string)$clean[$col]] ?? null;
+                        if ($mapped !== null) {
+                            $clean[$col] = $mapped;
+                        }
+                    }
                 }
             }
 
@@ -274,9 +313,31 @@ class Importer
                     }
                 }
 
-                // 2) Insert, keeping the id when free or allocating a new one on collision.
+                // 1b) Force-new entity (clone mode): keep the exported business key (real prod email /
+                //     order number) when it is still free on the target, and regenerate it only when
+                //     it would collide. Record the decision so this entity's grid child mirrors it.
+                if ($cloneNew && $cloneRegenerate !== []) {
+                    $collides = $uniqueKey !== []
+                        && $this->findByUniqueKey($connection, $tableName, $pk, $uniqueKey, $row) !== null;
+                    foreach ($cloneRegenerate as $col => $strategy) {
+                        if (!array_key_exists($col, $row) || $row[$col] === null || $row[$col] === '') {
+                            continue;
+                        }
+                        $old = (string)$row[$col];
+                        if ($collides) {
+                            $row[$col] = $this->regenerate($strategy, $old, $cloneToken);
+                        }
+                        $regen[$col][$old] = $row[$col];
+                    }
+                }
+
+                // 2) Insert. A clone-mode force-new identity row always takes a fresh auto-increment
+                //    id (so the imported customer/order is a brand-new local record and its children
+                //    remap onto the new id); otherwise keep the id when free, allocate on collision.
                 $pkValue = $row[$pk] ?? null;
-                if ($pkIsIdentity && $pkValue !== null && isset($takenPks[(string)$pkValue])) {
+                $forceNewId = $cloneNew && $pkIsIdentity;
+                $collision = $pkIsIdentity && $pkValue !== null && isset($takenPks[(string)$pkValue]);
+                if ($forceNewId || $collision) {
                     unset($row[$pk]);
                     $connection->insert($tableName, $row);
                     $targetPk = $connection->lastInsertId($tableName);
