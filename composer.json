@@ -1,17 +1,22 @@
 {
-    "name": "tool/module-dbtool",
-    "description": "Generic, configuration-driven export/import of a single customer's complete database footprint",
+    "name": "henryschein/module-dbtool",
+    "description": "N/A",
     "type": "magento2-module",
-    "license": "MIT",
     "require": {
-        "ext-zip": "*"
+        "magento/framework": "*",
+        "php": "~8.2.0||~8.3.0||~8.4.0",
+        "kamermans/guzzle-oauth2-subscriber": "*"
     },
+    "license": [
+        "Proprietary"
+    ],
     "autoload": {
         "files": [
             "registration.php"
         ],
         "psr-4": {
-            "Tool\\DbTool\\": ""
+            "HenrySchein\\DbTool\\": ""
         }
     }
 }
+
