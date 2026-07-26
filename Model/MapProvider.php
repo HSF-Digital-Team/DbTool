@@ -1,12 +1,12 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Model;
+namespace HenrySchein\DbTool\Model;
 
-use Tool\DbTool\Api\Data\TableDefinitionInterface;
-use Tool\DbTool\Api\MapProviderInterface;
-use Tool\DbTool\Model\Config\CustomerMap;
-use Tool\DbTool\Model\Config\TableDefinitionFactory;
+use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
+use HenrySchein\DbTool\Api\MapProviderInterface;
+use HenrySchein\DbTool\Model\Config\CustomerMap;
+use HenrySchein\DbTool\Model\Config\TableDefinitionFactory;
 
 /**
  * Assembles the customer data map: the seeded defaults from CustomerMap merged with any table

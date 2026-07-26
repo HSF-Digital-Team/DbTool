@@ -1,11 +1,11 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Model\Config;
+namespace HenrySchein\DbTool\Model\Config;
 
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
-use Tool\DbTool\Api\Data\TableDefinitionInterface;
+use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Immutable value object built from one raw map entry.

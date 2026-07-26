@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
-    <preference for="Tool\DbTool\Api\MapProviderInterface" type="Tool\DbTool\Model\MapProvider"/>
+    <preference for="HenrySchein\DbTool\Api\MapProviderInterface" type="HenrySchein\DbTool\Model\MapProvider"/>
     <type name="Magento\Framework\Console\CommandList">
         <arguments>
             <argument name="commands" xsi:type="array">
-                <item name="tool_export_specialcustomer" xsi:type="object">Tool\DbTool\Console\Command\ExportSpecialCustomerCommand</item>
-                <item name="tool_import_specialcustomer" xsi:type="object">Tool\DbTool\Console\Command\ImportSpecialCustomerCommand</item>
+                <item name="tool_export_specialcustomer" xsi:type="object">HenrySchein\DbTool\Console\Command\ExportSpecialCustomerCommand</item>
+                <item name="tool_import_specialcustomer" xsi:type="object">HenrySchein\DbTool\Console\Command\ImportSpecialCustomerCommand</item>
             </argument>
         </arguments>
     </type>
@@ -14,7 +14,7 @@
         Other modules extend the customer data map without touching this module by injecting
         additional table definitions here, e.g.:
 
-        <type name="Tool\DbTool\Model\MapProvider">
+        <type name="HenrySchein\DbTool\Model\MapProvider">
             <arguments>
                 <argument name="tables" xsi:type="array">
                     <item name="my_table" xsi:type="array">

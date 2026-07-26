@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Api;
+namespace HenrySchein\DbTool\Api;
 
 /**
  * Optional per-table hook for special handling that cannot be expressed declaratively in the map

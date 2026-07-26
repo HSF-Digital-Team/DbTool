@@ -1,16 +1,16 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Model\Config;
+namespace HenrySchein\DbTool\Model\Config;
 
-use Tool\DbTool\Api\Data\TableDefinitionInterface;
+use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Default, seeded customer data map (the "single source of truth" starting point).
  *
  * This is the ONE place that knows the shape of Magento's stock customer footprint. The engine
  * never hardcodes any of it. To cover more tables, add entries here — or, from another module,
- * inject them into Tool\DbTool\Model\MapProvider via etc/di.xml (no change to this file required).
+ * inject them into HenrySchein\DbTool\Model\MapProvider via etc/di.xml (no change to this file required).
  *
  * Relationship recap (parent -> child column that references it):
  *   customer_entity.entity_id

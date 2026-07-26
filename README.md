@@ -68,7 +68,7 @@ The default map lives in `Model/Config/CustomerMap.php`. Each entry describes on
 | `clone_new`          | no                  | `--mode=clone` only: skip the `unique_key` reuse match and always insert a fresh row (force-create). Set on `customer_entity`, `sales_order`. |
 | `clone_regenerate`   | no                  | `--mode=clone` only: `column => strategy` map rewriting unique business keys before insert. Strategies: `email_suffix`, `suffix`. |
 | `filter`             | no                  | Extra WHERE conditions, `['column op ?' => value]`, bound safely. |
-| `processor`          | no                  | FQCN implementing `Tool\DbTool\Api\TableProcessorInterface` for special handling. |
+| `processor`          | no                  | FQCN implementing `HenrySchein\DbTool\Api\TableProcessorInterface` for special handling. |
 
 ### How relationships are resolved (export)
 
@@ -133,7 +133,7 @@ Add tables without editing this module by injecting into `MapProvider` from your
 An entry with the same array key as a default **replaces** that default.
 
 ```xml
-<type name="Tool\DbTool\Model\MapProvider">
+<type name="HenrySchein\DbTool\Model\MapProvider">
     <arguments>
         <argument name="tables" xsi:type="array">
             <item name="my_custom_table" xsi:type="array">
@@ -154,7 +154,7 @@ An entry with the same array key as a default **replaces** that default.
 ## Custom processors
 
 For handling that can't be expressed declaratively (scrubbing password hashes, dropping generated
-columns, remapping values), implement `Tool\DbTool\Api\TableProcessorInterface` and reference it by
+columns, remapping values), implement `HenrySchein\DbTool\Api\TableProcessorInterface` and reference it by
 FQCN in the entry's `processor` field. The engine calls `processExportRows()` / `processImportRows()`
 around that table's rows.
 

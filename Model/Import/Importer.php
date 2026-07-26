@@ -1,17 +1,17 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Model\Import;
+namespace HenrySchein\DbTool\Model\Import;
 
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Math\Random;
 use Magento\Framework\Phrase;
-use Tool\DbTool\Api\Data\TableDefinitionInterface;
-use Tool\DbTool\Api\MapProviderInterface;
-use Tool\DbTool\Model\Processor\ProcessorProvider;
-use Tool\DbTool\Model\Storage\CsvStorage;
+use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
+use HenrySchein\DbTool\Api\MapProviderInterface;
+use HenrySchein\DbTool\Model\Processor\ProcessorProvider;
+use HenrySchein\DbTool\Model\Storage\CsvStorage;
 
 /**
  * Import engine with collision-safe id remapping.

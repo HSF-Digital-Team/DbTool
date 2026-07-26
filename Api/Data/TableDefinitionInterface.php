@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Api\Data;
+namespace HenrySchein\DbTool\Api\Data;
 
 /**
  * Immutable description of one table in the customer data map.
@@ -71,7 +71,7 @@ interface TableDefinitionInterface
     public function getFilter(): array;
 
     /**
-     * Optional FQCN of a Tool\DbTool\Api\TableProcessorInterface for special handling. Null if none.
+     * Optional FQCN of a HenrySchein\DbTool\Api\TableProcessorInterface for special handling. Null if none.
      */
     public function getProcessor(): ?string;
 

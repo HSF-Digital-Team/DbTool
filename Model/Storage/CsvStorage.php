@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace Tool\DbTool\Model\Storage;
+namespace HenrySchein\DbTool\Model\Storage;
 
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Exception\FileSystemException;
