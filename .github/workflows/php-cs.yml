@@ -4,9 +4,7 @@ on:
     branches:
       # Magebit Jenkins instance sometimes needed,
       # to test some features which resides on staging branch
-      - staging
-      - staging-ecs
-      - production
+      - main
 
 permissions:
   contents: read
@@ -24,9 +22,8 @@ jobs:
         uses: tj-actions/changed-files@v47
         with:
           files: |
-            app/code/**/*.php
-            app/code/**/*.phtml
-            app/design/**/*.phtml
+            **/*.php
+            **/*.phtml
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2

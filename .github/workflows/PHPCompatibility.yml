@@ -4,9 +4,7 @@ on:
     branches:
       # Magebit Jenkins instance sometimes needed,
       # to test some features which resides on staging branch
-      - staging
-      - staging-ecs
-      - production
+      - main
 
 permissions:
   contents: read
