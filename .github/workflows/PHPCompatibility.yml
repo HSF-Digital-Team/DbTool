@@ -1,0 +1,20 @@
+name: PHP Compatibility
+on:
+  pull_request:
+    branches:
+      # Magebit Jenkins instance sometimes needed,
+      # to test some features which resides on staging branch
+      - staging
+      - staging-ecs
+      - production
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: PHPCompatibility
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run PHPCompatibility
+        uses: HSF-Digital-Team/github-actions/php-compatibility@main
