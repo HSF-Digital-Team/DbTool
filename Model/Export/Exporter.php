@@ -1,15 +1,15 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Model\Export;
+namespace EcomEU\DbTool\Model\Export;
 
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
-use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
-use HenrySchein\DbTool\Api\MapProviderInterface;
-use HenrySchein\DbTool\Model\Processor\ProcessorProvider;
-use HenrySchein\DbTool\Model\Relation\RelationResolver;
-use HenrySchein\DbTool\Model\Storage\CsvStorage;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\MapProviderInterface;
+use EcomEU\DbTool\Model\Processor\ProcessorProvider;
+use EcomEU\DbTool\Model\Relation\RelationResolver;
+use EcomEU\DbTool\Model\Storage\CsvStorage;
 
 /**
  * Export engine. Walks the customer data map in export-priority order, resolving each table's

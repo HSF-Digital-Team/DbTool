@@ -1,11 +1,11 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Model\Relation;
+namespace EcomEU\DbTool\Model\Relation;
 
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\DB\Select;
-use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Turns a table definition + the ids already collected from parent tables into a bound SELECT.

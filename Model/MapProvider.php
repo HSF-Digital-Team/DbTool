@@ -1,12 +1,12 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Model;
+namespace EcomEU\DbTool\Model;
 
-use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
-use HenrySchein\DbTool\Api\MapProviderInterface;
-use HenrySchein\DbTool\Model\Config\CustomerMap;
-use HenrySchein\DbTool\Model\Config\TableDefinitionFactory;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\MapProviderInterface;
+use EcomEU\DbTool\Model\Config\CustomerMap;
+use EcomEU\DbTool\Model\Config\TableDefinitionFactory;
 
 /**
  * Assembles the customer data map: the seeded defaults from CustomerMap merged with any table

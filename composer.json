@@ -1,5 +1,5 @@
 {
-    "name": "henryschein/module-dbtool",
+    "name": "ecomeu/module-dbtool",
     "description": "N/A",
     "type": "magento2-module",
     "require": {
@@ -15,7 +15,7 @@
             "registration.php"
         ],
         "psr-4": {
-            "HenrySchein\\DbTool\\": ""
+            "EcomEU\\DbTool\\": ""
         }
     }
 }

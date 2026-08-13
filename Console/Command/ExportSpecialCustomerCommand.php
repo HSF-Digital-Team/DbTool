@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Console\Command;
+namespace EcomEU\DbTool\Console\Command;
 
 use Magento\Framework\App\Area;
 use Magento\Framework\App\State;
@@ -9,7 +9,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use HenrySchein\DbTool\Model\Export\Exporter;
+use EcomEU\DbTool\Model\Export\Exporter;
 
 /**
  * Thin CLI wrapper around the export engine. No table-specific logic lives here.

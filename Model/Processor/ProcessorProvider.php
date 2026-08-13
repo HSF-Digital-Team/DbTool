@@ -1,12 +1,12 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Model\Processor;
+namespace EcomEU\DbTool\Model\Processor;
 
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\ObjectManagerInterface;
 use Magento\Framework\Phrase;
-use HenrySchein\DbTool\Api\TableProcessorInterface;
+use EcomEU\DbTool\Api\TableProcessorInterface;
 
 /**
  * Resolves and caches optional per-table processors referenced by FQCN in the data map.
