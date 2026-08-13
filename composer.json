@@ -2,6 +2,17 @@
     "name": "ecomeu/module-dbtool",
     "description": "N/A",
     "type": "magento2-module",
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "laminas/laminas-dependency-plugin": true,
+            "magento/*": true,
+            "cweagans/composer-patches": true,
+            "phpstan/extension-installer": true,
+            "php-http/discovery": true
+        }
+    },
     "require": {
         "magento/framework": "*",
         "php": "~8.2.0||~8.3.0||~8.4.0",
