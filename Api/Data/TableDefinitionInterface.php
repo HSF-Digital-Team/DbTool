@@ -12,9 +12,9 @@ namespace EcomEU\DbTool\Api\Data;
 interface TableDefinitionInterface
 {
     /** Relationship types. */
-    public const RELATION_DIRECT = 'direct';
-    public const RELATION_CHILD = 'child';
-    public const RELATION_LOOKUP = 'lookup';
+    public const string RELATION_DIRECT = 'direct';
+    public const string RELATION_CHILD = 'child';
+    public const string RELATION_LOOKUP = 'lookup';
 
     /**
      * Table name (without DB prefix; resolved through ResourceConnection::getTableName()).
@@ -66,7 +66,7 @@ interface TableDefinitionInterface
     /**
      * Optional extra WHERE conditions, each entry ['column op ?' => value] (bound safely).
      *
-     * @return array<string, mixed>
+     * @return array
      */
     public function getFilter(): array;
 
@@ -77,7 +77,7 @@ interface TableDefinitionInterface
 
     /**
      * For a LOOKUP relationship: where to gather this table's ids from, as a list of
-     * ['table' => other mapped table, 'column' => its column]. Rows are those whose primary key
+     * ['table' => another mapped table, 'column' => its column]. Rows are those whose primary key
      * appears in the union of those collected column values. Empty for non-lookup tables.
      *
      * @return array<int, array{table: string, column: string}>
@@ -85,7 +85,7 @@ interface TableDefinitionInterface
     public function getLookupSources(): array;
 
     /**
-     * Foreign-key columns that must be remapped on import, each ['column' => local column,
+     * Foreign-key for a columns that must be remapped on import, each ['column' => local column,
      * 'table' => referenced mapped table]. Includes the auto-derived child->parent reference plus
      * any explicit cross-links declared in the map.
      *
@@ -94,7 +94,9 @@ interface TableDefinitionInterface
     public function getReferences(): array;
 
     /**
-     * Natural/business key columns used on import to detect an equivalent row already present on
+     * Natural/business key columns used on import
+     *
+     * To detect an equivalent row already present on
      * the target (e.g. ["email", "website_id"] or ["sku"]). Empty when the table has none.
      *
      * @return string[]
@@ -121,7 +123,7 @@ interface TableDefinitionInterface
      * "email_suffix" (insert +clone-<token> into the local part) and "suffix" (append -<token>).
      * Empty when the table needs no regeneration.
      *
-     * @return array<string, string>
+     * @return array
      */
     public function getCloneRegenerate(): array;
 }

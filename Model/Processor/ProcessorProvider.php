@@ -3,10 +3,10 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Processor;
 
+use EcomEU\DbTool\Api\TableProcessorInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\ObjectManagerInterface;
 use Magento\Framework\Phrase;
-use EcomEU\DbTool\Api\TableProcessorInterface;
 
 /**
  * Resolves and caches optional per-table processors referenced by FQCN in the data map.
@@ -16,17 +16,20 @@ use EcomEU\DbTool\Api\TableProcessorInterface;
  */
 class ProcessorProvider
 {
-    private ObjectManagerInterface $objectManager;
-
-    /** @var array<string, TableProcessorInterface> */
+    /** @var array */
     private array $instances = [];
 
-    public function __construct(ObjectManagerInterface $objectManager)
-    {
-        $this->objectManager = $objectManager;
+    /**
+     * @param ObjectManagerInterface $objectManager
+     */
+    public function __construct(
+        private readonly ObjectManagerInterface $objectManager
+    ) {
     }
 
     /**
+     * Get a processor instance by class name.
+     *
      * @param string|null $class
      * @return TableProcessorInterface|null
      * @throws LocalizedException

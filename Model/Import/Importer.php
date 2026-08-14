@@ -3,15 +3,16 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Import;
 
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\MapProviderInterface;
+use EcomEU\DbTool\Model\Processor\ProcessorProvider;
+use EcomEU\DbTool\Model\Storage\CsvStorage;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Math\Random;
 use Magento\Framework\Phrase;
-use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
-use EcomEU\DbTool\Api\MapProviderInterface;
-use EcomEU\DbTool\Model\Processor\ProcessorProvider;
-use EcomEU\DbTool\Model\Storage\CsvStorage;
+use Throwable;
 
 /**
  * Import engine with collision-safe id remapping.
@@ -29,24 +30,20 @@ use EcomEU\DbTool\Model\Storage\CsvStorage;
  */
 class Importer
 {
-    private ResourceConnection $resourceConnection;
-    private MapProviderInterface $mapProvider;
-    private ProcessorProvider $processorProvider;
-    private CsvStorage $storage;
-    private Random $random;
-
+    /**
+     * @param ResourceConnection $resourceConnection
+     * @param MapProviderInterface $mapProvider
+     * @param ProcessorProvider $processorProvider
+     * @param CsvStorage $storage
+     * @param Random $random
+     */
     public function __construct(
-        ResourceConnection $resourceConnection,
-        MapProviderInterface $mapProvider,
-        ProcessorProvider $processorProvider,
-        CsvStorage $storage,
-        Random $random
+        private readonly ResourceConnection $resourceConnection,
+        private readonly MapProviderInterface $mapProvider,
+        private readonly ProcessorProvider $processorProvider,
+        private readonly CsvStorage $storage,
+        private readonly Random $random
     ) {
-        $this->resourceConnection = $resourceConnection;
-        $this->mapProvider = $mapProvider;
-        $this->processorProvider = $processorProvider;
-        $this->storage = $storage;
-        $this->random = $random;
     }
 
     /**
@@ -56,10 +53,10 @@ class Importer
      * @param callable|null $progress fn(string $table, int $written, string $status): void
      * @param bool $cloneMode when true, force-create a new customer (+footprint) instead of matching
      *                        and reusing an existing one; unique business keys are regenerated
-     * @return array{directory: string, tables: array<string, int>, skipped: string[], remapped: int,
-     *               clone_token: ?string, new_customer_ids: array<int, mixed>,
+     * @return array{directory: string, tables: array, skipped: string[], remapped: int,
+     *               clone_token: ?string, new_customer_ids: array,
      *               new_customers: array<int, array{id: mixed, email: mixed}>}
-     * @throws LocalizedException
+     * @throws LocalizedException|Throwable
      */
     public function import(int $customerId, ?callable $progress = null, bool $cloneMode = false): array
     {
@@ -111,7 +108,16 @@ class Importer
                 $rows = $processor->processImportRows($table, $rows);
             }
 
-            $stats = $this->writeTable($connection, $definition, $rows, $idMap, $reused, $regen, $cloneMode, $cloneToken);
+            $stats = $this->writeTable(
+                $connection,
+                $definition,
+                $rows,
+                $idMap,
+                $reused,
+                $regen,
+                $cloneMode,
+                $cloneToken
+            );
             $results[$table] = $stats['written'];
             $remappedTotal += $stats['remapped'];
 
@@ -134,11 +140,14 @@ class Importer
     }
 
     /**
-     * Resolve the target customer id + email for the ids the import mapped customers onto, so the
+     * Resolve the target customer id + email
+     *
+     * For the ids the import mapped customers onto, so the
      * caller can tell you exactly which customer to look at (a fresh one in clone mode).
      *
+     * @param AdapterInterface $connection
      * @param int[]|string[] $customerIds target customer_entity ids
-     * @return array<int, array{id: mixed, email: mixed}>
+     * @return array
      */
     private function resolveCustomers(AdapterInterface $connection, array $customerIds): array
     {
@@ -161,13 +170,14 @@ class Importer
      *
      * @param AdapterInterface $connection
      * @param TableDefinitionInterface $definition
-     * @param array<int, array<string, mixed>> $rows
-     * @param array<string, array<string, mixed>> $idMap  by-ref, accumulated across tables
-     * @param array<string, array<string, bool>> $reused  by-ref, accumulated across tables
-     * @param array<string, array<string, mixed>> $regen  by-ref, clone-mode column => oldValue => newValue
+     * @param array $rows
+     * @param array $idMap by-ref, accumulated across tables
+     * @param array $reused by-ref, accumulated across tables
+     * @param array $regen by-ref, clone-mode column => oldValue => newValue
      * @param bool $cloneMode force-new mode
      * @param string $cloneToken per-run token used to regenerate unique business keys
-     * @return array{written: int, remapped: int, matched: int, skipped: int, cloned: bool}
+     * @return array
+     * @throws Throwable
      */
     private function writeTable(
         AdapterInterface $connection,
@@ -291,7 +301,7 @@ class Importer
 
                 // 0) Remap self-references to the parent row inserted earlier in this same loop.
                 foreach ($selfReferences as $selfColumn) {
-                    if (isset($row[$selfColumn]) && $row[$selfColumn] !== null) {
+                    if (isset($row[$selfColumn])) {
                         $selfKey = (string)$row[$selfColumn];
                         if (isset($idMap[$table][$selfKey])) {
                             $row[$selfColumn] = $idMap[$table][$selfKey];
@@ -356,7 +366,7 @@ class Importer
                 }
             }
             $connection->commit();
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $connection->rollBack();
             throw $e;
         }
@@ -371,27 +381,37 @@ class Importer
     }
 
     /**
+     * HasSelfParent
+     *
      * 1 when the row sets any self-reference column (a child), 0 when none are set (a parent) —
      * used to order parents before children for self-referential tables.
      *
-     * @param array<string, mixed> $row
+     * @param array $row
      * @param string[] $selfReferences
+     * @return int
      */
     private function hasSelfParent(array $row, array $selfReferences): int
     {
-        foreach ($selfReferences as $column) {
-            if (isset($row[$column]) && $row[$column] !== null && $row[$column] !== '') {
-                return 1;
-            }
+        if (array_any(
+            $selfReferences,
+            fn ($column) => isset($row[$column]) && $row[$column] !== ''
+        )
+        ) {
+            return 1;
         }
         return 0;
     }
 
     /**
+     * Regenerate
+     *
      * Rewrite a unique business-key value to a fresh, deterministic-per-run value so clone-mode
      * inserts don't violate a unique index.
      *
-     * @param string $strategy "email_suffix" | "suffix"
+     * @param string $strategy
+     * @param string $value
+     * @param string $token
+     * @return string
      */
     private function regenerate(string $strategy, string $value, string $token): string
     {
@@ -406,10 +426,15 @@ class Importer
     }
 
     /**
+     * LoadTakenPks
+     *
      * Existing target primary keys among the incoming (remapped) primary-key values.
      *
-     * @param array<int, array{original_pk: mixed, row: array<string, mixed>}> $prepared
-     * @return array<string, bool>
+     * @param AdapterInterface $connection
+     * @param string $tableName
+     * @param string $pk
+     * @param array $prepared
+     * @return array
      */
     private function loadTakenPks(AdapterInterface $connection, string $tableName, string $pk, array $prepared): array
     {
@@ -435,10 +460,15 @@ class Importer
     }
 
     /**
+     * FindByUniqueKey
+     *
      * Find an existing row's primary key by natural key, or null.
      *
+     * @param AdapterInterface $connection
+     * @param string $tableName
+     * @param string $pk
      * @param string[] $uniqueKey
-     * @param array<string, mixed> $row
+     * @param array $row
      * @return mixed|null
      */
     private function findByUniqueKey(
@@ -447,7 +477,7 @@ class Importer
         string $pk,
         array $uniqueKey,
         array $row
-    ) {
+    ): ?string {
         $select = $connection->select()->from($tableName, [$pk]);
         foreach ($uniqueKey as $column) {
             $value = $row[$column] ?? null;
@@ -459,12 +489,14 @@ class Importer
         }
         $select->limit(1);
 
-        $found = $connection->fetchOne($select);
-        return $found === false ? null : $found;
+        return $connection->fetchOne($select);
     }
 
     /**
-     * @param array{written: int, remapped: int, matched: int, skipped: int} $stats
+     * StatusLabel
+     *
+     * @param array $stats
+     * @return string
      */
     private function statusLabel(array $stats): string
     {

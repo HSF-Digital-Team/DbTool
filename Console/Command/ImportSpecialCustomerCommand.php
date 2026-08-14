@@ -3,13 +3,14 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Console\Command;
 
+use EcomEU\DbTool\Model\Import\Importer;
 use Magento\Framework\App\Area;
 use Magento\Framework\App\State;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use EcomEU\DbTool\Model\Import\Importer;
+use Throwable;
 
 /**
  * Thin CLI wrapper around the import engine. No table-specific logic lives here.
@@ -18,25 +19,37 @@ use EcomEU\DbTool\Model\Import\Importer;
  */
 class ImportSpecialCustomerCommand extends Command
 {
-    private const OPTION_CUSTOMER_ID = 'customer_id';
-    private const OPTION_MODE = 'mode';
-    private const MODE_RESTORE = 'restore';
-    private const MODE_CLONE = 'clone';
+    private const string OPTION_CUSTOMER_ID = 'customer_id';
+    private const string OPTION_MODE = 'mode';
+    private const string MODE_RESTORE = 'restore';
+    private const string MODE_CLONE = 'clone';
 
-    private Importer $importer;
-    private State $appState;
-
-    public function __construct(Importer $importer, State $appState, ?string $name = null)
-    {
-        $this->importer = $importer;
-        $this->appState = $appState;
+    /**
+     * Constructor
+     *
+     * @param Importer $importer
+     * @param State $appState
+     * @param string|null $name
+     */
+    public function __construct(
+        private readonly Importer $importer,
+        private readonly State $appState,
+        ?string $name = null
+    ) {
         parent::__construct($name);
     }
 
+    /**
+     * Configure
+     *
+     * @return void
+     */
     protected function configure(): void
     {
         $this->setName('Tool:import:specialcustomer')
-            ->setDescription('Import previously exported customer data from var/import/specialcustomer/<customer_id>/*.csv')
+            ->setDescription(
+                'Import previously exported customer data from var/import/specialcustomer/<customer_id>/*.csv'
+            )
             ->addOption(
                 self::OPTION_CUSTOMER_ID,
                 null,
@@ -54,6 +67,13 @@ class ImportSpecialCustomerCommand extends Command
         parent::configure();
     }
 
+    /**
+     * Execute
+     *
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     * @return int
+     */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $customerId = $input->getOption(self::OPTION_CUSTOMER_ID);
@@ -65,7 +85,13 @@ class ImportSpecialCustomerCommand extends Command
 
         $mode = (string)($input->getOption(self::OPTION_MODE) ?? self::MODE_RESTORE);
         if (!in_array($mode, [self::MODE_RESTORE, self::MODE_CLONE], true)) {
-            $output->writeln(sprintf('<error>--mode must be "%s" or "%s".</error>', self::MODE_RESTORE, self::MODE_CLONE));
+            $output->writeln(
+                sprintf(
+                    '<error>--mode must be "%s" or "%s".</error>',
+                    self::MODE_RESTORE,
+                    self::MODE_CLONE
+                )
+            );
             return Command::FAILURE;
         }
         $cloneMode = $mode === self::MODE_CLONE;
@@ -89,14 +115,18 @@ class ImportSpecialCustomerCommand extends Command
                 },
                 $cloneMode
             );
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $output->writeln('<error>Import failed: ' . $e->getMessage() . '</error>');
             return Command::FAILURE;
         }
 
         $total = array_sum($result['tables']);
-        $output->writeln(sprintf('<info>Done. %d row(s) imported across %d table(s) from %s</info>',
-            $total, count($result['tables']), $result['directory']));
+        $output->writeln(sprintf(
+            '<info>Done. %d row(s) imported across %d table(s) from %s</info>',
+            $total,
+            count($result['tables']),
+            $result['directory']
+        ));
         if ($result['skipped'] !== []) {
             $output->writeln('<comment>Skipped (no CSV present): ' . implode(', ', $result['skipped']) . '</comment>');
         }
@@ -109,13 +139,13 @@ class ImportSpecialCustomerCommand extends Command
                 $output->writeln(sprintf(
                     '<info>%s: id=%s  email=%s</info>',
                     $label,
-                    (string)$customer['id'],
-                    (string)$customer['email']
+                    $customer['id'],
+                    $customer['email']
                 ));
             }
         }
         if ($cloneMode) {
-            $output->writeln(sprintf('<comment>Clone token: %s</comment>', (string)$result['clone_token']));
+            $output->writeln(sprintf('<comment>Clone token: %s</comment>', $result['clone_token']));
         }
 
         return Command::SUCCESS;
@@ -128,8 +158,9 @@ class ImportSpecialCustomerCommand extends Command
     {
         try {
             $this->appState->setAreaCode(Area::AREA_ADMINHTML);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             // Area code already set — nothing to do.
+            dump($e->getMessage());
         }
     }
 }

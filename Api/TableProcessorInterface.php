@@ -17,8 +17,8 @@ interface TableProcessorInterface
      * Transform rows read from the DB before they are written to CSV.
      *
      * @param string $table
-     * @param array<int, array<string, mixed>> $rows
-     * @return array<int, array<string, mixed>>
+     * @param array $rows
+     * @return array
      */
     public function processExportRows(string $table, array $rows): array;
 
@@ -26,8 +26,8 @@ interface TableProcessorInterface
      * Transform rows read from CSV before they are written to the DB.
      *
      * @param string $table
-     * @param array<int, array<string, mixed>> $rows
-     * @return array<int, array<string, mixed>>
+     * @param array $rows
+     * @return array
      */
     public function processImportRows(string $table, array $rows): array;
 }

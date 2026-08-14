@@ -3,12 +3,12 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Relation;
 
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\DB\Select;
-use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
- * Turns a table definition + the ids already collected from parent tables into a bound SELECT.
+ * Turns a table definition and the ids already collected from parent tables into a bound SELECT.
  *
  * This is where the map's relationship metadata becomes a query. It is the only translation step;
  * neither the Exporter nor the Importer needs to understand relationship types.
@@ -24,7 +24,7 @@ class RelationResolver
      * @param AdapterInterface $connection
      * @param TableDefinitionInterface $definition
      * @param int $customerId
-     * @param array<string, array<string, array<int, mixed>>> $collected  collected[table][column] => values
+     * @param array $collected
      * @return Select|null
      */
     public function buildSelect(
@@ -67,11 +67,14 @@ class RelationResolver
     }
 
     /**
+     * Gather
+     *
      * Union of the distinct id values this lookup table should be scoped to, gathered from the
      * columns already collected off its source tables.
      *
-     * @param array<string, array<string, array<int, mixed>>> $collected
-     * @return array<int, mixed>
+     * @param TableDefinitionInterface $definition
+     * @param array $collected
+     * @return array
      */
     private function gatherLookupIds(TableDefinitionInterface $definition, array $collected): array
     {

@@ -3,13 +3,13 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Export;
 
-use Magento\Framework\App\ResourceConnection;
-use Magento\Framework\DB\Adapter\AdapterInterface;
 use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 use EcomEU\DbTool\Api\MapProviderInterface;
 use EcomEU\DbTool\Model\Processor\ProcessorProvider;
 use EcomEU\DbTool\Model\Relation\RelationResolver;
 use EcomEU\DbTool\Model\Storage\CsvStorage;
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\DB\Adapter\AdapterInterface;
 
 /**
  * Export engine. Walks the customer data map in export-priority order, resolving each table's
@@ -20,24 +20,20 @@ use EcomEU\DbTool\Model\Storage\CsvStorage;
  */
 class Exporter
 {
-    private ResourceConnection $resourceConnection;
-    private MapProviderInterface $mapProvider;
-    private RelationResolver $relationResolver;
-    private ProcessorProvider $processorProvider;
-    private CsvStorage $storage;
-
+    /**
+     * @param ResourceConnection $resourceConnection
+     * @param MapProviderInterface $mapProvider
+     * @param RelationResolver $relationResolver
+     * @param ProcessorProvider $processorProvider
+     * @param CsvStorage $storage
+     */
     public function __construct(
-        ResourceConnection $resourceConnection,
-        MapProviderInterface $mapProvider,
-        RelationResolver $relationResolver,
-        ProcessorProvider $processorProvider,
-        CsvStorage $storage
+        private readonly ResourceConnection $resourceConnection,
+        private readonly MapProviderInterface $mapProvider,
+        private readonly RelationResolver $relationResolver,
+        private readonly ProcessorProvider $processorProvider,
+        private readonly CsvStorage $storage
     ) {
-        $this->resourceConnection = $resourceConnection;
-        $this->mapProvider = $mapProvider;
-        $this->relationResolver = $relationResolver;
-        $this->processorProvider = $processorProvider;
-        $this->storage = $storage;
     }
 
     /**
@@ -45,7 +41,7 @@ class Exporter
      *
      * @param int $customerId
      * @param callable|null $progress fn(string $table, int $rowCount): void
-     * @return array{directory: string, tables: array<string, int>} directory + per-table row counts
+     * @return array{directory: string, tables: array} directory + per-table row counts
      */
     public function export(int $customerId, ?callable $progress = null): array
     {
@@ -121,9 +117,9 @@ class Exporter
     /**
      * Distinct, non-null values of one column across the given rows.
      *
-     * @param array<int, array<string, mixed>> $rows
+     * @param array $rows
      * @param string $column
-     * @return array<int, mixed>
+     * @return array
      */
     private function distinctValues(array $rows, string $column): array
     {

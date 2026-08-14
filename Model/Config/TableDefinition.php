@@ -3,9 +3,9 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Config;
 
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
-use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Immutable value object built from one raw map entry.
@@ -15,20 +15,19 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
  */
 class TableDefinition implements TableDefinitionInterface
 {
-    /** @var array<string, mixed> */
-    private array $data;
-
     /**
-     * @param array<string, mixed> $data
+     * @param array $data
      * @throws LocalizedException
      */
-    public function __construct(array $data)
-    {
-        $this->data = $data;
+    public function __construct(
+        private readonly array $data
+    ) {
         $this->validate();
     }
 
     /**
+     * Validate
+     *
      * @throws LocalizedException
      */
     private function validate(): void
@@ -72,63 +71,123 @@ class TableDefinition implements TableDefinitionInterface
         }
     }
 
+    /**
+     * GetTable
+     *
+     * @return string
+     */
     public function getTable(): string
     {
         return (string)$this->data['table'];
     }
 
+    /**
+     * GetPrimaryKey
+     *
+     * @return string
+     */
     public function getPrimaryKey(): string
     {
         return (string)($this->data['primary_key'] ?? 'entity_id');
     }
 
+    /**
+     * GetRelationshipType
+     *
+     * @return string
+     */
     public function getRelationshipType(): string
     {
         return (string)$this->data['relationship_type'];
     }
 
+    /**
+     * GetCustomerColumn
+     *
+     * @return string|null
+     */
     public function getCustomerColumn(): ?string
     {
         return isset($this->data['customer_column']) ? (string)$this->data['customer_column'] : null;
     }
 
+    /**
+     * GetParent
+     *
+     * @return string|null
+     */
     public function getParent(): ?string
     {
         return isset($this->data['parent']) ? (string)$this->data['parent'] : null;
     }
 
+    /**
+     * GetParentKey
+     *
+     * @return string|null
+     */
     public function getParentKey(): ?string
     {
         return isset($this->data['parent_key']) ? (string)$this->data['parent_key'] : null;
     }
 
+    /**
+     * GetForeignKey
+     *
+     * @return string|null
+     */
     public function getForeignKey(): ?string
     {
         return isset($this->data['foreign_key']) ? (string)$this->data['foreign_key'] : null;
     }
 
+    /**
+     * GetExportPriority
+     *
+     * @return int
+     */
     public function getExportPriority(): int
     {
         return (int)($this->data['export_priority'] ?? 0);
     }
 
+    /**
+     * GetImportPriority
+     *
+     * @return int
+     */
     public function getImportPriority(): int
     {
         // Import defaults to the same ordering as export unless explicitly overridden.
         return (int)($this->data['import_priority'] ?? $this->getExportPriority());
     }
 
+    /**
+     * GetFilter
+     *
+     * @return array
+     */
     public function getFilter(): array
     {
         $filter = $this->data['filter'] ?? [];
         return is_array($filter) ? $filter : [];
     }
 
+    /**
+     * GetProcessor
+     *
+     * @return string|null
+     */
     public function getProcessor(): ?string
     {
         return isset($this->data['processor']) ? (string)$this->data['processor'] : null;
     }
 
+    /**
+     * GetLookupSources
+     *
+     * @return array|array[]
+     */
     public function getLookupSources(): array
     {
         $sources = $this->data['lookup_sources'] ?? [];
@@ -147,6 +206,11 @@ class TableDefinition implements TableDefinitionInterface
         return $normalized;
     }
 
+    /**
+     * GetReferences
+     *
+     * @return array|array[]
+     */
     public function getReferences(): array
     {
         $references = [];
@@ -172,22 +236,42 @@ class TableDefinition implements TableDefinitionInterface
         return $references;
     }
 
+    /**
+     * GetUniqueKey
+     *
+     * @return array|string[]
+     */
     public function getUniqueKey(): array
     {
         $key = $this->data['unique_key'] ?? [];
         return is_array($key) ? array_values(array_map('strval', $key)) : [];
     }
 
+    /**
+     * GetSkipIfParentReused
+     *
+     * @return bool
+     */
     public function isSkipIfParentReused(): bool
     {
         return !empty($this->data['skip_if_parent_reused']);
     }
 
+    /**
+     * GetCloneNew
+     *
+     * @return bool
+     */
     public function isCloneNew(): bool
     {
         return !empty($this->data['clone_new']);
     }
 
+    /**
+     * GetCloneRegenerate
+     *
+     * @return array|string[]
+     */
     public function getCloneRegenerate(): array
     {
         $map = $this->data['clone_regenerate'] ?? [];

@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Storage;
 
+use Exception;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Exception\FileSystemException;
 use Magento\Framework\Exception\LocalizedException;
@@ -10,6 +11,7 @@ use Magento\Framework\File\Csv;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\WriteInterface;
 use Magento\Framework\Phrase;
+use ZipArchive;
 
 /**
  * Owns the on-disk layout and CSV dialect for both export and import, so the two sides always
@@ -17,22 +19,33 @@ use Magento\Framework\Phrase;
  */
 class CsvStorage
 {
-    private const EXPORT_BASE = 'export/specialcustomer';
-    private const IMPORT_BASE = 'import/specialcustomer';
+    private const string EXPORT_BASE = 'export/specialcustomer';
+    private const string IMPORT_BASE = 'import/specialcustomer';
 
-    private Filesystem $filesystem;
-    private Csv $csv;
+    /**
+     * @var WriteInterface|null $varDirectory
+     */
     private ?WriteInterface $varDirectory = null;
 
-    public function __construct(Filesystem $filesystem, Csv $csv)
-    {
-        $this->filesystem = $filesystem;
-        $this->csv = $csv;
+    /**
+     * Constructor
+     *
+     * @param Filesystem $filesystem
+     * @param Csv $csv
+     */
+    public function __construct(
+        private readonly Filesystem $filesystem,
+        private readonly Csv $csv
+    ) {
     }
 
     /**
+     * PrepareExportDir
+     *
      * (Re)create an empty export directory for the customer and return its var-relative path.
      *
+     * @param int $customerId
+     * @return string
      * @throws FileSystemException
      */
     public function prepareExportDir(int $customerId): string
@@ -47,14 +60,18 @@ class CsvStorage
     }
 
     /**
+     * Zip Export
+     *
      * Bundle every CSV in the customer's export directory into a single sibling zip
      * (var/export/specialcustomer/<id>.zip) with flat entry names. Returns its absolute path.
      *
+     * @param int $customerId
+     * @return string
      * @throws LocalizedException
      */
     public function zipExport(int $customerId): string
     {
-        if (!class_exists(\ZipArchive::class)) {
+        if (!class_exists(ZipArchive::class)) {
             throw new LocalizedException(new Phrase(
                 'Tool_DbTool: the PHP zip extension (ext-zip) is required to create the export archive.'
             ));
@@ -64,8 +81,8 @@ class CsvStorage
         $sourceDir = $var->getAbsolutePath(self::EXPORT_BASE . '/' . $customerId);
         $zipPath = $var->getAbsolutePath(self::EXPORT_BASE . '/' . $customerId . '.zip');
 
-        $zip = new \ZipArchive();
-        if ($zip->open($zipPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+        $zip = new ZipArchive();
+        if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             throw new LocalizedException(new Phrase('Tool_DbTool: cannot create zip archive: %1', [$zipPath]));
         }
         foreach (glob($sourceDir . '/*.csv') ?: [] as $file) {
@@ -78,6 +95,10 @@ class CsvStorage
 
     /**
      * Var-relative import directory path (may or may not exist).
+     *
+     * @param int $customerId
+     * @return string
+     * @throws FileSystemException
      */
     public function getImportDir(int $customerId): string
     {
@@ -86,6 +107,9 @@ class CsvStorage
 
     /**
      * True when the given absolute directory exists.
+     *
+     * @param string $absoluteDir
+     * @return bool
      */
     public function dirExists(string $absoluteDir): bool
     {
@@ -93,13 +117,15 @@ class CsvStorage
     }
 
     /**
+     * WriteTable
+     *
      * Write one table's rows to <table>.csv. Row 0 is the header. When $rows is empty a
      * header-only file is written so the table's presence (and columns) is still recorded.
      *
      * @param string $absoluteDir
      * @param string $table
      * @param string[] $header
-     * @param array<int, array<string, mixed>> $rows
+     * @param array $rows
      * @throws FileSystemException
      */
     public function writeTable(string $absoluteDir, string $table, array $header, array $rows): void
@@ -120,7 +146,8 @@ class CsvStorage
      *
      * @param string $absoluteDir
      * @param string $table
-     * @return array<int, array<string, mixed>>|null
+     * @return array|null
+     * @throws Exception
      */
     public function readTable(string $absoluteDir, string $table): ?array
     {
@@ -140,6 +167,12 @@ class CsvStorage
         return $rows;
     }
 
+    /**
+     * Get the var directory for writing CSV files.
+     *
+     * @return WriteInterface
+     * @throws FileSystemException
+     */
     private function getVarDirectory(): WriteInterface
     {
         if ($this->varDirectory === null) {

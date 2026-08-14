@@ -17,48 +17,49 @@ use EcomEU\DbTool\Model\Config\TableDefinitionFactory;
  */
 class MapProvider implements MapProviderInterface
 {
-    private CustomerMap $customerMap;
-    private TableDefinitionFactory $definitionFactory;
-
-    /** @var array<string, array<string, mixed>> Extra/override raw entries injected via di.xml. */
-    private array $tables;
-
     /** @var TableDefinitionInterface[]|null */
     private ?array $definitions = null;
 
     /**
+     * Construct
+     *
      * @param CustomerMap $customerMap
      * @param TableDefinitionFactory $definitionFactory
-     * @param array<string, array<string, mixed>> $tables
+     * @param array $tables Extra/override raw entries injected via di.xml.
      */
     public function __construct(
-        CustomerMap $customerMap,
-        TableDefinitionFactory $definitionFactory,
-        array $tables = []
+        private readonly CustomerMap $customerMap,
+        private readonly TableDefinitionFactory $definitionFactory,
+        private readonly array $tables = []
     ) {
-        $this->customerMap = $customerMap;
-        $this->definitionFactory = $definitionFactory;
-        $this->tables = $tables;
     }
 
+    /**
+     * Get the export order of table definitions.
+     *
+     * @return TableDefinitionInterface[]
+     */
     public function getExportOrder(): array
     {
         $definitions = $this->build();
         usort(
             $definitions,
-            static fn (TableDefinitionInterface $a, TableDefinitionInterface $b): int
-                => $a->getExportPriority() <=> $b->getExportPriority()
+            static fn (TableDefinitionInterface $a, TableDefinitionInterface $b): int => $a->getExportPriority() <=> $b->getExportPriority()
         );
         return $definitions;
     }
 
+    /**
+     * Get the import order of table definitions.
+     *
+     * @return TableDefinitionInterface[]
+     */
     public function getImportOrder(): array
     {
         $definitions = $this->build();
         usort(
             $definitions,
-            static fn (TableDefinitionInterface $a, TableDefinitionInterface $b): int
-                => $a->getImportPriority() <=> $b->getImportPriority()
+            static fn (TableDefinitionInterface $a, TableDefinitionInterface $b): int => $a->getImportPriority() <=> $b->getImportPriority()
         );
         return $definitions;
     }
