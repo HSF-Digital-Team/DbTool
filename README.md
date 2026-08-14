@@ -1,4 +1,4 @@
-# Tool_DbTool
+# EcomEU_DbTool
 
 Generic, **configuration-driven** export/import of a single customer's complete database footprint.
 
