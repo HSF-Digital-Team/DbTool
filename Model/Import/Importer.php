@@ -28,7 +28,7 @@ use Throwable;
  * Children flagged skip_if_parent_reused are dropped when their parent was matched to a row the
  * target already owns (product sub-data, customer grid).
  */
-class Importer
+readonly class Importer
 {
     /**
      * @param ResourceConnection $resourceConnection
@@ -38,11 +38,11 @@ class Importer
      * @param Random $random
      */
     public function __construct(
-        private readonly ResourceConnection $resourceConnection,
-        private readonly MapProviderInterface $mapProvider,
-        private readonly ProcessorProvider $processorProvider,
-        private readonly CsvStorage $storage,
-        private readonly Random $random
+        private ResourceConnection   $resourceConnection,
+        private MapProviderInterface $mapProvider,
+        private ProcessorProvider    $processorProvider,
+        private CsvStorage           $storage,
+        private Random               $random
     ) {
     }
 

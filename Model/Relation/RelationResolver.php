@@ -3,9 +3,9 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Relation;
 
-use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\DB\Select;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Turns a table definition and the ids already collected from parent tables into a bound SELECT.

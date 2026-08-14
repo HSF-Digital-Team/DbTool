@@ -19,7 +19,7 @@ use Magento\Framework\Exception\LocalizedException;
  *
  * All traversal knowledge lives here; nothing about specific tables is hardcoded.
  */
-class Exporter
+readonly class Exporter
 {
     /**
      * @param ResourceConnection $resourceConnection
@@ -29,11 +29,11 @@ class Exporter
      * @param CsvStorage $storage
      */
     public function __construct(
-        private readonly ResourceConnection $resourceConnection,
-        private readonly MapProviderInterface $mapProvider,
-        private readonly RelationResolver $relationResolver,
-        private readonly ProcessorProvider $processorProvider,
-        private readonly CsvStorage $storage
+        private ResourceConnection   $resourceConnection,
+        private MapProviderInterface $mapProvider,
+        private RelationResolver     $relationResolver,
+        private ProcessorProvider    $processorProvider,
+        private CsvStorage           $storage
     ) {
     }
 

@@ -3,9 +3,9 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Config;
 
-use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\Phrase;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Immutable value object built from one raw map entry.

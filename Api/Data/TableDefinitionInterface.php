@@ -85,7 +85,7 @@ interface TableDefinitionInterface
     public function getLookupSources(): array;
 
     /**
-     * Foreign-key for a columns that must be remapped on import, each ['column' => local column,
+     * Foreign-key for the columns that must be remapped on import, each ['column' => local column,
      * 'table' => referenced mapped table]. Includes the auto-derived child->parent reference plus
      * any explicit cross-links declared in the map.
      *

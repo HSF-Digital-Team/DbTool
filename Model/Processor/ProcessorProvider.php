@@ -3,10 +3,10 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Processor;
 
-use EcomEU\DbTool\Api\TableProcessorInterface;
 use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\ObjectManagerInterface;
 use Magento\Framework\Phrase;
+use EcomEU\DbTool\Api\TableProcessorInterface;
 
 /**
  * Resolves and caches optional per-table processors referenced by FQCN in the data map.
