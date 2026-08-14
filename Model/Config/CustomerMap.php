@@ -1,16 +1,16 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Model\Config;
+namespace EcomEU\DbTool\Model\Config;
 
-use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Default, seeded customer data map (the "single source of truth" starting point).
  *
  * This is the ONE place that knows the shape of Magento's stock customer footprint. The engine
  * never hardcodes any of it. To cover more tables, add entries here — or, from another module,
- * inject them into HenrySchein\DbTool\Model\MapProvider via etc/di.xml (no change to this file required).
+ * inject them into EcomEU\DbTool\Model\MapProvider via etc/di.xml (no change to this file required).
  *
  * Relationship recap (parent -> child column that references it):
  *   customer_entity.entity_id
@@ -29,7 +29,9 @@ use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
 class CustomerMap
 {
     /**
-     * @return array<string, array<string, mixed>>
+     * Get
+     *
+     * @return array
      */
     public function get(): array
     {
@@ -282,7 +284,11 @@ class CustomerMap
      * unique (entity_id, attribute_id). The import engine remaps `entity_id` to the parent's target
      * id and lets `value_id` collisions allocate a fresh id.
      *
-     * @return array<string, array<string, mixed>>
+     * @param string $parent
+     * @param int $exportPriority
+     * @param int $importPriority
+     * @param bool $skipIfParentReused
+     * @return array
      */
     private function eavValueTables(
         string $parent,
@@ -313,7 +319,7 @@ class CustomerMap
      * and all skipped on import when the product already exists on target (matched by sku) — the
      * target already owns this data. Only stub-inserted (missing-sku) products receive it.
      *
-     * @return array<string, array<string, mixed>>
+     * @return array
      */
     private function productChildren(): array
     {

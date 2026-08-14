@@ -1,15 +1,16 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Model\Export;
+namespace EcomEU\DbTool\Model\Export;
 
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\MapProviderInterface;
+use EcomEU\DbTool\Model\Processor\ProcessorProvider;
+use EcomEU\DbTool\Model\Relation\RelationResolver;
+use EcomEU\DbTool\Model\Storage\CsvStorage;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
-use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
-use HenrySchein\DbTool\Api\MapProviderInterface;
-use HenrySchein\DbTool\Model\Processor\ProcessorProvider;
-use HenrySchein\DbTool\Model\Relation\RelationResolver;
-use HenrySchein\DbTool\Model\Storage\CsvStorage;
+use Magento\Framework\Exception\LocalizedException;
 
 /**
  * Export engine. Walks the customer data map in export-priority order, resolving each table's
@@ -20,24 +21,20 @@ use HenrySchein\DbTool\Model\Storage\CsvStorage;
  */
 class Exporter
 {
-    private ResourceConnection $resourceConnection;
-    private MapProviderInterface $mapProvider;
-    private RelationResolver $relationResolver;
-    private ProcessorProvider $processorProvider;
-    private CsvStorage $storage;
-
+    /**
+     * @param ResourceConnection $resourceConnection
+     * @param MapProviderInterface $mapProvider
+     * @param RelationResolver $relationResolver
+     * @param ProcessorProvider $processorProvider
+     * @param CsvStorage $storage
+     */
     public function __construct(
-        ResourceConnection $resourceConnection,
-        MapProviderInterface $mapProvider,
-        RelationResolver $relationResolver,
-        ProcessorProvider $processorProvider,
-        CsvStorage $storage
+        private ResourceConnection   $resourceConnection,
+        private MapProviderInterface $mapProvider,
+        private RelationResolver     $relationResolver,
+        private ProcessorProvider    $processorProvider,
+        private CsvStorage           $storage
     ) {
-        $this->resourceConnection = $resourceConnection;
-        $this->mapProvider = $mapProvider;
-        $this->relationResolver = $relationResolver;
-        $this->processorProvider = $processorProvider;
-        $this->storage = $storage;
     }
 
     /**
@@ -45,7 +42,8 @@ class Exporter
      *
      * @param int $customerId
      * @param callable|null $progress fn(string $table, int $rowCount): void
-     * @return array{directory: string, tables: array<string, int>} directory + per-table row counts
+     * @return array{directory: string, tables: array} directory + per-table row counts
+     * @throws LocalizedException
      */
     public function export(int $customerId, ?callable $progress = null): array
     {
@@ -89,6 +87,10 @@ class Exporter
 
     /**
      * Bundle the customer's export directory into a single zip and return its absolute path.
+     *
+     * @param int $customerId
+     * @return string
+     * @throws LocalizedException
      */
     public function zip(int $customerId): string
     {
@@ -121,9 +123,9 @@ class Exporter
     /**
      * Distinct, non-null values of one column across the given rows.
      *
-     * @param array<int, array<string, mixed>> $rows
+     * @param array $rows
      * @param string $column
-     * @return array<int, mixed>
+     * @return array
      */
     private function distinctValues(array $rows, string $column): array
     {
@@ -139,6 +141,8 @@ class Exporter
     /**
      * Column names for a table, used to write a header-only CSV when there are no rows.
      *
+     * @param AdapterInterface $connection
+     * @param string $table
      * @return string[]
      */
     private function describeColumns(AdapterInterface $connection, string $table): array

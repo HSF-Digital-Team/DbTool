@@ -1,15 +1,16 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Console\Command;
+namespace EcomEU\DbTool\Console\Command;
 
+use EcomEU\DbTool\Model\Export\Exporter;
 use Magento\Framework\App\Area;
 use Magento\Framework\App\State;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use HenrySchein\DbTool\Model\Export\Exporter;
+use Throwable;
 
 /**
  * Thin CLI wrapper around the export engine. No table-specific logic lives here.
@@ -18,18 +19,28 @@ use HenrySchein\DbTool\Model\Export\Exporter;
  */
 class ExportSpecialCustomerCommand extends Command
 {
-    private const OPTION_CUSTOMER_ID = 'customer_id';
+    private const string OPTION_CUSTOMER_ID = 'customer_id';
 
-    private Exporter $exporter;
-    private State $appState;
-
-    public function __construct(Exporter $exporter, State $appState, ?string $name = null)
-    {
-        $this->exporter = $exporter;
-        $this->appState = $appState;
+    /**
+     * Constructor
+     *
+     * @param Exporter $exporter
+     * @param State $appState
+     * @param string|null $name
+     */
+    public function __construct(
+        private readonly Exporter $exporter,
+        private readonly State $appState,
+        ?string $name = null
+    ) {
         parent::__construct($name);
     }
 
+    /**
+     * Conf
+     *
+     * @return void
+     */
     protected function configure(): void
     {
         $this->setName('Tool:export:specialcustomer')
@@ -43,6 +54,13 @@ class ExportSpecialCustomerCommand extends Command
         parent::configure();
     }
 
+    /**
+     * Exe
+     *
+     * @param InputInterface $input
+     * @param OutputInterface $output
+     * @return int
+     */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $customerId = $input->getOption(self::OPTION_CUSTOMER_ID);
@@ -63,19 +81,23 @@ class ExportSpecialCustomerCommand extends Command
                     $output->writeln(sprintf('  %-28s %d row(s)', $table, $count));
                 }
             );
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $output->writeln('<error>Export failed: ' . $e->getMessage() . '</error>');
             return Command::FAILURE;
         }
 
         $total = array_sum($result['tables']);
-        $output->writeln(sprintf('<info>Done. %d row(s) across %d table(s) written to %s</info>',
-            $total, count($result['tables']), $result['directory']));
+        $output->writeln(sprintf(
+            '<info>Done. %d row(s) across %d table(s) written to %s</info>',
+            $total,
+            count($result['tables']),
+            $result['directory']
+        ));
 
         try {
             $zipPath = $this->exporter->zip($customerId);
             $output->writeln(sprintf('<info>Archive: %s</info>', $zipPath));
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             $output->writeln('<comment>Zip archive not created: ' . $e->getMessage() . '</comment>');
         }
 
@@ -89,8 +111,9 @@ class ExportSpecialCustomerCommand extends Command
     {
         try {
             $this->appState->setAreaCode(Area::AREA_ADMINHTML);
-        } catch (\Throwable $e) {
+        } catch (Throwable $e) {
             // Area code already set — nothing to do.
+            dump($e->getMessage());
         }
     }
 }

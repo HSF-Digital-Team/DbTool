@@ -1,9 +1,9 @@
 <?php
 declare(strict_types=1);
 
-namespace HenrySchein\DbTool\Api;
+namespace EcomEU\DbTool\Api;
 
-use HenrySchein\DbTool\Api\Data\TableDefinitionInterface;
+use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 
 /**
  * Supplies the customer data map (the single source of truth) to the export/import engine.
