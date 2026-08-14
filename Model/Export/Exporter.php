@@ -19,7 +19,7 @@ use Magento\Framework\Exception\LocalizedException;
  *
  * All traversal knowledge lives here; nothing about specific tables is hardcoded.
  */
-readonly class Exporter
+class Exporter
 {
     /**
      * @param ResourceConnection $resourceConnection
