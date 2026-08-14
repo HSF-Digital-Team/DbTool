@@ -10,7 +10,9 @@ use Magento\Framework\Exception\LocalizedException;
 use Magento\Framework\File\Csv;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\WriteInterface;
+use Magento\Framework\Filesystem\Driver\File as FileDriver;
 use Magento\Framework\Phrase;
+use Magento\Framework\Filesystem\Glob;
 use ZipArchive;
 
 /**
@@ -32,10 +34,12 @@ class CsvStorage
      *
      * @param Filesystem $filesystem
      * @param Csv $csv
+     * @param FileDriver $fileDriver
      */
     public function __construct(
         private readonly Filesystem $filesystem,
-        private readonly Csv $csv
+        private readonly Csv $csv,
+        private readonly FileDriver $fileDriver
     ) {
     }
 
@@ -85,8 +89,8 @@ class CsvStorage
         if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
             throw new LocalizedException(new Phrase('Tool_DbTool: cannot create zip archive: %1', [$zipPath]));
         }
-        foreach (glob($sourceDir . '/*.csv') ?: [] as $file) {
-            $zip->addFile($file, basename($file));
+        foreach (Glob::glob($sourceDir . '/*.csv') ?: [] as $file) {
+            $zip->addFile($file, substr($file, strlen($sourceDir) + 1));
         }
         $zip->close();
 
@@ -110,10 +114,11 @@ class CsvStorage
      *
      * @param string $absoluteDir
      * @return bool
+     * @throws FileSystemException
      */
     public function dirExists(string $absoluteDir): bool
     {
-        return is_dir($absoluteDir);
+        return $this->fileDriver->isDirectory($absoluteDir);
     }
 
     /**
@@ -138,7 +143,7 @@ class CsvStorage
             }
             $data[] = $line;
         }
-        $this->csv->saveData($absoluteDir . '/' . $table . '.csv', $data);
+        $this->csv->appendData($absoluteDir . '/' . $table . '.csv', $data);
     }
 
     /**
@@ -152,7 +157,7 @@ class CsvStorage
     public function readTable(string $absoluteDir, string $table): ?array
     {
         $file = $absoluteDir . '/' . $table . '.csv';
-        if (!is_file($file)) {
+        if (!$this->fileDriver->isFile($file)) {
             return null;
         }
         $data = $this->csv->getData($file);

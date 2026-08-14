@@ -10,6 +10,7 @@ use EcomEU\DbTool\Model\Relation\RelationResolver;
 use EcomEU\DbTool\Model\Storage\CsvStorage;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
+use Magento\Framework\Exception\LocalizedException;
 
 /**
  * Export engine. Walks the customer data map in export-priority order, resolving each table's
@@ -42,6 +43,7 @@ class Exporter
      * @param int $customerId
      * @param callable|null $progress fn(string $table, int $rowCount): void
      * @return array{directory: string, tables: array} directory + per-table row counts
+     * @throws LocalizedException
      */
     public function export(int $customerId, ?callable $progress = null): array
     {
@@ -85,6 +87,10 @@ class Exporter
 
     /**
      * Bundle the customer's export directory into a single zip and return its absolute path.
+     *
+     * @param int $customerId
+     * @return string
+     * @throws LocalizedException
      */
     public function zip(int $customerId): string
     {
@@ -135,6 +141,8 @@ class Exporter
     /**
      * Column names for a table, used to write a header-only CSV when there are no rows.
      *
+     * @param AdapterInterface $connection
+     * @param string $table
      * @return string[]
      */
     private function describeColumns(AdapterInterface $connection, string $table): array
