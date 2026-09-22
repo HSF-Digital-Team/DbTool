@@ -69,6 +69,37 @@ class TableDefinition implements TableDefinitionInterface
                 [$this->data['table']]
             ));
         }
+
+        $strategies = [self::STRATEGY_EMAIL_SUFFIX, self::STRATEGY_SUFFIX];
+        foreach (['clone_regenerate', 'clone_mirror'] as $field) {
+            foreach ($this->normalizeStrategyMap($field) as $column => $strategy) {
+                if (!in_array($strategy, $strategies, true)) {
+                    throw new LocalizedException(new Phrase(
+                        'Tool_DbTool: table "%1" %2 column "%3" has an unknown strategy "%4" (expected "%5").',
+                        [$this->data['table'], $field, $column, $strategy, implode('" or "', $strategies)]
+                    ));
+                }
+            }
+        }
+    }
+
+    /**
+     * Normalize a column => strategy map field.
+     *
+     * @param string $field
+     * @return array<string, string>
+     */
+    private function normalizeStrategyMap(string $field): array
+    {
+        $map = $this->data[$field] ?? [];
+        if (!is_array($map)) {
+            return [];
+        }
+        $normalized = [];
+        foreach ($map as $column => $strategy) {
+            $normalized[(string)$column] = (string)$strategy;
+        }
+        return $normalized;
     }
 
     /**
@@ -274,14 +305,16 @@ class TableDefinition implements TableDefinitionInterface
      */
     public function getCloneRegenerate(): array
     {
-        $map = $this->data['clone_regenerate'] ?? [];
-        if (!is_array($map)) {
-            return [];
-        }
-        $normalized = [];
-        foreach ($map as $column => $strategy) {
-            $normalized[(string)$column] = (string)$strategy;
-        }
-        return $normalized;
+        return $this->normalizeStrategyMap('clone_regenerate');
+    }
+
+    /**
+     * GetCloneMirror
+     *
+     * @return array|string[]
+     */
+    public function getCloneMirror(): array
+    {
+        return $this->normalizeStrategyMap('clone_mirror');
     }
 }

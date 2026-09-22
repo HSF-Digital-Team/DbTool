@@ -34,6 +34,11 @@ Clone token: k3f9zq
 - Import **remaps ids on collision**: if a primary key is already taken on the target it inserts a
   new row with a fresh id and rewrites all foreign keys so the parent/child graph stays linked.
   Move exported files into `var/import/specialcustomer/<id>/` to import.
+- Import is **one transaction**: a failure on any table rolls the whole run back, so a target DB is
+  never left with half a footprint.
+- SQL `NULL` is written to CSV as `\N` (MySQL's convention) so that `NULL` and the empty string
+  survive the round trip as distinct values. A plain empty cell is still imported as `NULL` for
+  nullable columns, so files written before this convention remain importable.
 
 ### Import modes (`--mode`)
 
@@ -59,7 +64,10 @@ Clone token: k3f9zq
 
   Which tables are cloned vs reused is config-driven: `clone_new` (skip the reuse match, always
   insert) is set on `customer_entity` and `sales_order`; `clone_regenerate` (column → strategy) makes
-  their unique keys unique. See those fields in the map table below.
+  their unique keys unique; `clone_mirror` (column → strategy) makes every denormalised copy of the
+  value (`customer_grid_flat.email`, `quote.customer_email`, `sales_order.customer_email`,
+  `sales_order_grid.increment_id`/`customer_email`, `quote_address.email`, `sales_order_address.email`)
+  follow whatever the deciding table kept or regenerated. See those fields in the map table below.
 
 ## The Customer Data Map
 
@@ -77,11 +85,12 @@ The default map lives in `Model/Config/CustomerMap.php`. Each entry describes on
 | `lookup_sources`     | for `lookup`        | `[{table, column}, …]` — gather this table's ids from those columns of already-exported tables. |
 | `export_priority`    | no (`0`)            | Ascending order; parents must precede children. |
 | `import_priority`    | no (= export)       | Ascending order; parents must precede children (FK safety). |
-| `references`         | no                  | FK columns to remap on import: `[{column, table}, …]` where `table` is another mapped table. The child→parent link is auto-derived; declare only cross-links. |
+| `references`         | no                  | FK columns to remap on import: `[{column, table}, …]` where `table` is another mapped table. The child→parent link is auto-derived; declare only cross-links. A reference to a table that imports **later** (e.g. `customer_entity.default_billing` → `customer_address_entity`) is rewritten by `UPDATE` at the end of the run. |
 | `unique_key`         | no                  | Natural key columns (e.g. `[email, website_id]`, `[sku]`). A matching target row is reused instead of inserted. |
 | `skip_if_parent_reused` | no               | Child rows are skipped on import when their parent matched an existing target row (product sub-data, customer grid). |
 | `clone_new`          | no                  | `--mode=clone` only: skip the `unique_key` reuse match and always insert a fresh row (force-create). Set on `customer_entity`, `sales_order`. |
-| `clone_regenerate`   | no                  | `--mode=clone` only: `column => strategy` map rewriting unique business keys before insert. Strategies: `email_suffix`, `suffix`. |
+| `clone_regenerate`   | no                  | `--mode=clone` only, on a `clone_new` table: `column => strategy` map rewriting unique business keys before insert (only on collision). Strategies: `email_suffix`, `suffix`. |
+| `clone_mirror`       | no                  | `--mode=clone` only: `column => strategy` map for columns holding a *copy* of a value regenerated elsewhere under that strategy (e.g. `quote.customer_email` mirrors `customer_entity.email`). |
 | `filter`             | no                  | Extra WHERE conditions, `['column op ?' => value]`, bound safely. |
 | `processor`          | no                  | FQCN implementing `EcomEU\DbTool\Api\TableProcessorInterface` for special handling. |
 
@@ -94,6 +103,11 @@ The default map lives in `Model/Config/CustomerMap.php`. Each entry describes on
 Because tables are processed in priority order, a parent's key values are always collected before
 its children are queried. A child (or lookup) that resolves to no ids yields a header-only CSV.
 
+The merged map is validated at load time: every `parent`, `references[].table` and
+`lookup_sources[].table` must name a mapped table, a child must have a higher `export_priority` **and**
+`import_priority` than its parent, and a lookup table must export after all of its sources. A bad
+entry (including one injected from `di.xml`) fails fast with a descriptive error.
+
 ### Import: id remapping & foreign-key preservation
 
 Tables import in `import_priority` order (parents first). The engine keeps an id map (old id → id on
@@ -103,6 +117,14 @@ when ids change. Per row:
 1. If `unique_key` is set and a target row matches → **reuse** its id (no insert).
 2. Else if the primary key is free on the target → insert keeping the original id.
 3. Else (collision) → insert with the id omitted and capture the new auto-increment id.
+
+A row skipped because its parent was reused (`skip_if_parent_reused`) is dropped together with **its
+own** children (cascade), so a skipped address never leaves orphan `customer_address_entity_*` rows.
+
+References that point *back* at a table imported later (`customer_entity.default_billing` /
+`default_shipping` → addresses, `sales_order.billing_address_id` / `shipping_address_id` → order
+addresses) are remembered per inserted row and applied as `UPDATE`s after the last table, once the
+target ids are known. Rows reused from the target keep their own links.
 
 **Products** (`catalog_product_entity`, a `lookup` from the item `product_id`s) export *after* the
 items but import *before* them (priorities 70/71 vs 5/6), so `sales_order_item.product_id` /
@@ -116,8 +138,9 @@ stub-inserted (missing-sku) product receives them.
 > environments use `scripts/db-sync-gui/`.
 
 > **Idempotency note:** because a taken id triggers a new-id insert, re-importing into the **same**
-> DB duplicates entities that have no `unique_key` (orders, quotes). The intended target is a
-> *different* DB. Customers (`email`) and products (`sku`) are matched and never duplicated.
+> DB duplicates entities that have no `unique_key` (quotes). The intended target is a
+> *different* DB. Customers (`email`), their addresses (skipped when the customer is reused),
+> orders (`increment_id`+`store_id`) and products (`sku`) are matched and never duplicated.
 
 > **Secondary unique keys:** the engine remaps the primary key but inserts other columns intact, so a
 > *secondary* unique index could otherwise collide. The known case, `sales_order`, is handled: it has
@@ -139,8 +162,10 @@ stub-inserted (missing-sku) product receives them.
 > `unique_key` to that business key — `primary_key => 'contrat_client'`, `unique_key => ['contrat_client']`.
 > `primary_key` must name a real column (the engine's match query selects it; the `entity_id` default
 > would error), and `unique_key` makes an existing row matched & reused rather than re-inserted (which
-> would hit its 1062). In `--mode=clone` such a row is matched (not cloned) — minting a new business id
-> (and any dependent rows) is out of scope.
+> would hit its 1062). In `--mode=clone` such a row is matched (not cloned) — its unique index is on
+> `contrat_client` alone, so it must **not** be `clone_new`; minting a new business id (and any
+> dependent rows) is out of scope. Its `contract_code` / `contrat_client_type_id` reference
+> `contrat_aladin`, which is outside the map and must already exist on the target.
 
 ## Extending the map from another module
 
@@ -179,9 +204,11 @@ around that table's rows.
 - **Customer & address EAV attribute data is captured.** `customer_entity` and
   `customer_address_entity` are EAV entities, so their custom attributes live in the value tables
   `customer_entity_{datetime,decimal,int,text,varchar}` and `customer_address_entity_{…}`. These are
-  seeded as `child` entries (FK `entity_id`). Customer value tables are `skip_if_parent_reused` — when
-  a customer is matched by email on the target, its attribute rows already exist there and are left
-  untouched; only a newly-inserted customer receives them.
+  seeded as `child` entries (FK `entity_id`). Customer value tables and addresses are
+  `skip_if_parent_reused` — when a customer is matched by email on the target, its attribute rows and
+  addresses already exist there and are left untouched (address value rows follow by cascade); only a
+  newly-inserted customer receives them.
+- **Requires PHP 8.3+** (typed class constants). CI runs PHPCS and PHPStan on 8.4.
 - **Customer group is synced.** `customer_group` is a `lookup` gathered from the group ids referenced
   by the customer/quotes/orders. On import it is **matched by `customer_group_code`** to reuse the
   target's group id (standard groups always match; a custom group inserts with a fresh id), and

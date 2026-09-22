@@ -147,6 +147,6 @@ class Exporter
      */
     private function describeColumns(AdapterInterface $connection, string $table): array
     {
-        return array_keys($connection->describeTable($connection->getTableName($table)));
+        return array_keys($connection->describeTable($this->resourceConnection->getTableName($table)));
     }
 }

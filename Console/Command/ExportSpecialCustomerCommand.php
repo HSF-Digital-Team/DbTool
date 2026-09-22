@@ -6,6 +6,7 @@ namespace EcomEU\DbTool\Console\Command;
 use EcomEU\DbTool\Model\Export\Exporter;
 use Magento\Framework\App\Area;
 use Magento\Framework\App\State;
+use Magento\Framework\Exception\LocalizedException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -111,9 +112,8 @@ class ExportSpecialCustomerCommand extends Command
     {
         try {
             $this->appState->setAreaCode(Area::AREA_ADMINHTML);
-        } catch (Throwable $e) {
+        } catch (LocalizedException $e) {
             // Area code already set — nothing to do.
-            dump($e->getMessage());
         }
     }
 }

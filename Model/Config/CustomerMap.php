@@ -15,7 +15,8 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
  * Relationship recap (parent -> child column that references it):
  *   customer_entity.entity_id
  *     ├─ customer_grid_flat.entity_id
- *     └─ customer_address_entity.parent_id
+ *     ├─ customer_address_entity.parent_id  (customer_entity.default_billing/shipping point back)
+ *     └─ contrat_aladin_clients.customer_id
  *   quote.customer_id -> customer_entity.entity_id
  *     ├─ quote_address.quote_id
  *     ├─ quote_item.quote_id
@@ -45,14 +46,18 @@ class CustomerMap
                 // Natural key: a matching target customer is reused (avoids the unique-email index
                 // failure and duplicate customers when importing into another DB).
                 'unique_key' => ['email', 'website_id'],
-                // group_id follows the customer group matched by code on the target.
+                // group_id follows the customer group matched by code on the target. The default
+                // address pointers reference a table imported LATER, so the engine rewrites them by
+                // UPDATE at the end of the run once the address ids are known.
                 'references' => [
                     ['column' => 'group_id', 'table' => 'customer_group'],
+                    ['column' => 'default_billing', 'table' => 'customer_address_entity'],
+                    ['column' => 'default_shipping', 'table' => 'customer_address_entity'],
                 ],
                 // Clone mode: force a brand-new customer (skip the email match) and give it a unique
                 // email so the (email, website_id) unique index is not violated.
                 'clone_new' => true,
-                'clone_regenerate' => ['email' => 'email_suffix'],
+                'clone_regenerate' => ['email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX],
                 'export_priority' => 10,
             ],
             'customer_grid_flat' => [
@@ -66,7 +71,7 @@ class CustomerMap
                 // skip it when the customer already exists on target.
                 'skip_if_parent_reused' => true,
                 // Clone mode: keep the grid email consistent with the cloned customer's new email.
-                'clone_regenerate' => ['email' => 'email_suffix'],
+                'clone_mirror' => ['email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX],
                 'export_priority' => 20,
             ],
             'customer_address_entity' => [
@@ -76,12 +81,19 @@ class CustomerMap
                 'parent' => 'customer_entity',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'parent_id',
+                // A customer matched by email on the target already owns its addresses: skip them
+                // (and, by cascade, their EAV value rows) instead of inserting duplicates each run.
+                'skip_if_parent_reused' => true,
                 'export_priority' => 20,
             ],
             // --- Contract ---
             // contrat_aladin_clients has NO surrogate PK/auto-increment; its identity is the
-            // globally-unique int `contrat_client`. Declare it so an existing contract is matched &
-            // reused (avoids the CONTRAT_ALADIN_CLIENTS_CONTRAT_CLIENT_CUSTOMER_ID 1062 collision).
+            // globally-unique int `contrat_client` (the unique index CONTRAT_ALADIN_CLIENTS_
+            // CONTRAT_CLIENT_CUSTOMER_ID covers contrat_client ALONE). Declare it so an existing
+            // contract is matched & reused (avoids the 1062 collision). Never clone_new: a contract
+            // can belong to one customer only, so in clone mode it is matched, not duplicated.
+            // contract_code / contrat_client_type_id reference contrat_aladin (outside the map),
+            // which must already exist on the target.
             'contract' => [
                 'table' => 'contrat_aladin_clients',
                 'primary_key' => 'contrat_client',
@@ -89,9 +101,7 @@ class CustomerMap
                 'parent' => 'customer_entity',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'customer_id',
-                'customer_column' => 'customer_id',
                 'unique_key' => ['contrat_client'],
-                'clone_new' => true,
                 'export_priority' => 25,
             ],
             // --- Quotes (carts) ---
@@ -105,6 +115,8 @@ class CustomerMap
                     ['column' => 'customer_id', 'table' => 'customer_entity'],
                     ['column' => 'customer_group_id', 'table' => 'customer_group'],
                 ],
+                // Clone mode: the denormalised email follows the cloned customer's email.
+                'clone_mirror' => ['customer_email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX],
                 'export_priority' => 30,
             ],
             'quote_address' => [
@@ -114,6 +126,12 @@ class CustomerMap
                 'parent' => 'quote',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'quote_id',
+                // The address also links the customer and the customer address it was copied from.
+                'references' => [
+                    ['column' => 'customer_id', 'table' => 'customer_entity'],
+                    ['column' => 'customer_address_id', 'table' => 'customer_address_entity'],
+                ],
+                'clone_mirror' => ['email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX],
                 'export_priority' => 40,
             ],
             'quote_item' => [
@@ -171,11 +189,17 @@ class CustomerMap
                     ['column' => 'customer_id', 'table' => 'customer_entity'],
                     ['column' => 'customer_group_id', 'table' => 'customer_group'],
                     ['column' => 'quote_id', 'table' => 'quote'],
+                    ['column' => 'quote_address_id', 'table' => 'quote_address'],
+                    // sales_order_address imports later: rewritten by UPDATE at the end of the run.
+                    ['column' => 'billing_address_id', 'table' => 'sales_order_address'],
+                    ['column' => 'shipping_address_id', 'table' => 'sales_order_address'],
                 ],
                 // Clone mode: force a new order (skip the increment_id match) with a unique
-                // increment_id so (increment_id, store_id) is not violated.
+                // increment_id so (increment_id, store_id) is not violated; the denormalised
+                // customer email follows the cloned customer's email.
                 'clone_new' => true,
-                'clone_regenerate' => ['increment_id' => 'suffix'],
+                'clone_regenerate' => ['increment_id' => TableDefinitionInterface::STRATEGY_SUFFIX],
+                'clone_mirror' => ['customer_email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX],
                 'export_priority' => 50,
             ],
             'sales_order_address' => [
@@ -185,6 +209,11 @@ class CustomerMap
                 'parent' => 'sales_order',
                 'parent_key' => 'entity_id',
                 'foreign_key' => 'parent_id',
+                'references' => [
+                    ['column' => 'customer_id', 'table' => 'customer_entity'],
+                    ['column' => 'customer_address_id', 'table' => 'customer_address_entity'],
+                ],
+                'clone_mirror' => ['email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX],
                 // Skip when the order was matched to an existing one on the target (it already has
                 // its addresses/items/payments/grid).
                 'skip_if_parent_reused' => true,
@@ -229,8 +258,11 @@ class CustomerMap
                 ],
                 'skip_if_parent_reused' => true,
                 // Clone mode: mirror the cloned order's new increment_id (it has its own composite
-                // unique on (increment_id, store_id)).
-                'clone_regenerate' => ['increment_id' => 'suffix'],
+                // unique on (increment_id, store_id)) and the cloned customer's email.
+                'clone_mirror' => [
+                    'increment_id' => TableDefinitionInterface::STRATEGY_SUFFIX,
+                    'customer_email' => TableDefinitionInterface::STRATEGY_EMAIL_SUFFIX,
+                ],
                 'export_priority' => 60,
             ],
 
@@ -273,8 +305,9 @@ class CustomerMap
             // customer_entity is EAV (entity_type_id 1): custom attributes live in these value
             // tables. Skipped on import when the customer is matched by email (target owns them).
             + $this->eavValueTables('customer_entity', 15, 15, true)
-            // Address custom attributes. Addresses always insert as new ids, so these follow along
-            // (no skip needed — an address is never "reused").
+            // Address custom attributes. An address is never matched by unique key, so no skip flag
+            // is needed here; when the address itself is skipped (customer reused) these rows are
+            // dropped by cascade.
             + $this->eavValueTables('customer_address_entity', 25, 25, false);
     }
 

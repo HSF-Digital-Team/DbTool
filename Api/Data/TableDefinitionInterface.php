@@ -16,6 +16,10 @@ interface TableDefinitionInterface
     public const string RELATION_CHILD = 'child';
     public const string RELATION_LOOKUP = 'lookup';
 
+    /** Clone-mode regeneration strategies. */
+    public const string STRATEGY_EMAIL_SUFFIX = 'email_suffix';
+    public const string STRATEGY_SUFFIX = 'suffix';
+
     /**
      * Table name (without DB prefix; resolved through ResourceConnection::getTableName()).
      */
@@ -87,7 +91,8 @@ interface TableDefinitionInterface
     /**
      * Foreign-key for the columns that must be remapped on import, each ['column' => local column,
      * 'table' => referenced mapped table]. Includes the auto-derived child->parent reference plus
-     * any explicit cross-links declared in the map.
+     * any explicit cross-links declared in the map. A reference to a table that imports LATER is
+     * applied as an UPDATE at the end of the run (e.g. customer_entity.default_billing).
      *
      * @return array<int, array{column: string, table: string}>
      */
@@ -126,4 +131,14 @@ interface TableDefinitionInterface
      * @return array
      */
     public function getCloneRegenerate(): array;
+
+    /**
+     * Columns holding a COPY of a business-key value regenerated elsewhere in clone mode (e.g.
+     * quote.customer_email mirrors customer_entity.email), as a map of column => strategy. The value
+     * is rewritten to whatever the deciding table produced under that strategy (kept or
+     * regenerated), so every copy stays consistent. Empty when the table mirrors nothing.
+     *
+     * @return array
+     */
+    public function getCloneMirror(): array;
 }
