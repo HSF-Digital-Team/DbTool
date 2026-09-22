@@ -25,6 +25,12 @@ class CsvStorage
     private const string IMPORT_BASE = 'import/specialcustomer';
 
     /**
+     * CSV representation of SQL NULL (MySQL's own convention), so that NULL and the empty string
+     * survive the round trip as distinct values.
+     */
+    public const string NULL_MARKER = '\\N';
+
+    /**
      * @var WriteInterface|null $varDirectory
      */
     private ?WriteInterface $varDirectory = null;
@@ -46,7 +52,7 @@ class CsvStorage
     /**
      * PrepareExportDir
      *
-     * (Re)create an empty export directory for the customer and return its var-relative path.
+     * (Re)create an empty export directory for the customer and return its absolute path.
      *
      * @param int $customerId
      * @return string
@@ -126,11 +132,12 @@ class CsvStorage
      *
      * Write one table's rows to <table>.csv. Row 0 is the header. When $rows is empty a
      * header-only file is written so the table's presence (and columns) is still recorded.
+     * NULL is written as the NULL_MARKER; a missing column is treated as NULL.
      *
      * @param string $absoluteDir
      * @param string $table
      * @param string[] $header
-     * @param array $rows
+     * @param array<int,array<string,mixed>> $rows
      * @throws FileSystemException
      */
     public function writeTable(string $absoluteDir, string $table, array $header, array $rows): void
@@ -139,7 +146,8 @@ class CsvStorage
         foreach ($rows as $row) {
             $line = [];
             foreach ($header as $column) {
-                $line[] = $row[$column] ?? null;
+                $value = $row[$column] ?? null;
+                $line[] = $value === null ? self::NULL_MARKER : $value;
             }
             $data[] = $line;
         }
@@ -149,9 +157,14 @@ class CsvStorage
     /**
      * Read one table's CSV into associative rows, or null when the file is absent.
      *
+     * Tolerates hand-edited files: blank lines are ignored, a short line is padded with NULLs and
+     * extra cells beyond the header are dropped. The NULL_MARKER reads back as NULL; a plain empty
+     * cell stays an empty string (the importer turns it into NULL only for nullable columns, which
+     * keeps files written before the marker existed importable).
+     *
      * @param string $absoluteDir
      * @param string $table
-     * @return array|null
+     * @return array<int,array<string,mixed>>|null
      * @throws Exception
      */
     public function readTable(string $absoluteDir, string $table): ?array
@@ -165,9 +178,20 @@ class CsvStorage
             return [];
         }
         $header = array_map('strval', array_shift($data));
+        $width = count($header);
         $rows = [];
         foreach ($data as $line) {
-            $rows[] = array_combine($header, $line);
+            // fgetcsv() yields [null] for a blank line.
+            if ($line === [null] || $line === [] || $line === ['']) {
+                continue;
+            }
+            $line = array_slice(array_pad($line, $width, null), 0, $width);
+            $row = [];
+            foreach ($header as $index => $column) {
+                $value = $line[$index];
+                $row[$column] = ($value === self::NULL_MARKER) ? null : $value;
+            }
+            $rows[] = $row;
         }
         return $rows;
     }

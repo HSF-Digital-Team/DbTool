@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Relation;
 
+use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\DB\Select;
 use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
@@ -16,6 +17,14 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 class RelationResolver
 {
     /**
+     * @param ResourceConnection $resourceConnection
+     */
+    public function __construct(
+        private readonly ResourceConnection $resourceConnection
+    ) {
+    }
+
+    /**
      * Build the SELECT that fetches this table's customer-scoped rows.
      *
      * Returns null when the relationship can be proven empty up front (a child whose parent yielded
@@ -24,7 +33,7 @@ class RelationResolver
      * @param AdapterInterface $connection
      * @param TableDefinitionInterface $definition
      * @param int $customerId
-     * @param array $collected
+     * @param array<string,array<string,array<int,mixed>>> $collected
      * @return Select|null
      */
     public function buildSelect(
@@ -33,8 +42,10 @@ class RelationResolver
         int $customerId,
         array $collected
     ): ?Select {
+        // ResourceConnection::getTableName() applies the configured table prefix; the adapter's
+        // own getTableName() only shortens over-long names and would miss the prefix.
         $select = $connection->select()->from(
-            $connection->getTableName($definition->getTable())
+            $this->resourceConnection->getTableName($definition->getTable())
         );
 
         if ($definition->getRelationshipType() === TableDefinitionInterface::RELATION_DIRECT) {
@@ -73,8 +84,8 @@ class RelationResolver
      * columns already collected off its source tables.
      *
      * @param TableDefinitionInterface $definition
-     * @param array $collected
-     * @return array
+     * @param array<string,array<string,array<int,mixed>>> $collected
+     * @return array<int,mixed>
      */
     private function gatherLookupIds(TableDefinitionInterface $definition, array $collected): array
     {

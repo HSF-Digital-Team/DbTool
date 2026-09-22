@@ -42,7 +42,7 @@ class Exporter
      *
      * @param int $customerId
      * @param callable|null $progress fn(string $table, int $rowCount): void
-     * @return array{directory: string, tables: array} directory + per-table row counts
+     * @return array{directory:string,tables:array<string,int>} directory + per-table row counts
      * @throws LocalizedException
      */
     public function export(int $customerId, ?callable $progress = null): array
@@ -67,7 +67,9 @@ class Exporter
                 $rows = $processor->processExportRows($table, $rows);
             }
 
-            $header = $rows !== [] ? array_keys($rows[0]) : $this->describeColumns($connection, $table);
+            $header = $rows !== []
+                ? array_map('strval', array_keys($rows[0]))
+                : $this->describeColumns($connection, $table);
             $this->storage->writeTable($absoluteDir, $table, $header, $rows);
 
             if (isset($neededColumns[$table])) {
@@ -101,7 +103,7 @@ class Exporter
      * Precompute, per parent table, which columns children reference as parent_key.
      *
      * @param TableDefinitionInterface[] $definitions
-     * @return array<string, string[]>
+     * @return array<string,string[]>
      */
     private function collectNeededColumns(array $definitions): array
     {
@@ -123,9 +125,9 @@ class Exporter
     /**
      * Distinct, non-null values of one column across the given rows.
      *
-     * @param array $rows
+     * @param array<int,array<string,mixed>> $rows
      * @param string $column
-     * @return array
+     * @return array<int,mixed>
      */
     private function distinctValues(array $rows, string $column): array
     {
@@ -147,6 +149,6 @@ class Exporter
      */
     private function describeColumns(AdapterInterface $connection, string $table): array
     {
-        return array_keys($connection->describeTable($connection->getTableName($table)));
+        return array_keys($connection->describeTable($this->resourceConnection->getTableName($table)));
     }
 }

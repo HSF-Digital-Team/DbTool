@@ -3,7 +3,7 @@
     "description": "Module used to sync customers from prod to local, could be handy in some cases",
     "type": "magento2-module",
     "require": {
-        "php": ">=8.1",
+        "php": ">=8.3",
         "magento/framework": "*",
         "magento/magento-coding-standard": "*"
     },
