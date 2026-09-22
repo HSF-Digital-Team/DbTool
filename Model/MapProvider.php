@@ -32,7 +32,7 @@ class MapProvider implements MapProviderInterface
      *
      * @param CustomerMap $customerMap
      * @param TableDefinitionFactory $definitionFactory
-     * @param array $tables Extra/override raw entries injected via di.xml.
+     * @param array<string,array<string,mixed>> $tables Extra/override raw entries injected via di.xml.
      */
     public function __construct(
         private readonly CustomerMap $customerMap,
@@ -102,7 +102,7 @@ class MapProvider implements MapProviderInterface
      */
     private function validate(array $definitions): void
     {
-        /** @var array<string, TableDefinitionInterface> $byTable */
+        /** @var array<string,TableDefinitionInterface> $byTable */
         $byTable = [];
         foreach ($definitions as $definition) {
             if (isset($byTable[$definition->getTable()])) {

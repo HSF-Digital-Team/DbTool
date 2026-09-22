@@ -32,7 +32,7 @@ class CustomerMap
     /**
      * Get
      *
-     * @return array
+     * @return array<string,array<string,mixed>>
      */
     public function get(): array
     {
@@ -321,7 +321,7 @@ class CustomerMap
      * @param int $exportPriority
      * @param int $importPriority
      * @param bool $skipIfParentReused
-     * @return array
+     * @return array<string,array<string,mixed>>
      */
     private function eavValueTables(
         string $parent,
@@ -352,7 +352,7 @@ class CustomerMap
      * and all skipped on import when the product already exists on target (matched by sku) — the
      * target already owns this data. Only stub-inserted (missing-sku) products receive it.
      *
-     * @return array
+     * @return array<string,array<string,mixed>>
      */
     private function productChildren(): array
     {

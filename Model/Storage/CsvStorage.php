@@ -137,7 +137,7 @@ class CsvStorage
      * @param string $absoluteDir
      * @param string $table
      * @param string[] $header
-     * @param array $rows
+     * @param array<int,array<string,mixed>> $rows
      * @throws FileSystemException
      */
     public function writeTable(string $absoluteDir, string $table, array $header, array $rows): void
@@ -164,7 +164,7 @@ class CsvStorage
      *
      * @param string $absoluteDir
      * @param string $table
-     * @return array|null
+     * @return array<int,array<string,mixed>>|null
      * @throws Exception
      */
     public function readTable(string $absoluteDir, string $table): ?array

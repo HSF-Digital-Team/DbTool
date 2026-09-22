@@ -33,7 +33,7 @@ class RelationResolver
      * @param AdapterInterface $connection
      * @param TableDefinitionInterface $definition
      * @param int $customerId
-     * @param array $collected
+     * @param array<string,array<string,array<int,mixed>>> $collected
      * @return Select|null
      */
     public function buildSelect(
@@ -84,8 +84,8 @@ class RelationResolver
      * columns already collected off its source tables.
      *
      * @param TableDefinitionInterface $definition
-     * @param array $collected
-     * @return array
+     * @param array<string,array<string,array<int,mixed>>> $collected
+     * @return array<int,mixed>
      */
     private function gatherLookupIds(TableDefinitionInterface $definition, array $collected): array
     {

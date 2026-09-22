@@ -111,9 +111,10 @@ class ExportSpecialCustomerCommand extends Command
     private function ensureAreaCode(): void
     {
         try {
-            $this->appState->setAreaCode(Area::AREA_ADMINHTML);
+            // Throws when no area code has been set yet.
+            $this->appState->getAreaCode();
         } catch (LocalizedException $e) {
-            // Area code already set — nothing to do.
+            $this->appState->setAreaCode(Area::AREA_ADMINHTML);
         }
     }
 }

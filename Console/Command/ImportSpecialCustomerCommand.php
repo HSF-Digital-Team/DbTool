@@ -137,7 +137,7 @@ class ImportSpecialCustomerCommand extends Command
                 $result['deferred_updates']
             ));
         }
-        $customers = $result['new_customers'] ?? [];
+        $customers = $result['new_customers'];
         if ($customers === []) {
             $output->writeln('<comment>No customer row was imported.</comment>');
         } else {
@@ -164,9 +164,10 @@ class ImportSpecialCustomerCommand extends Command
     private function ensureAreaCode(): void
     {
         try {
-            $this->appState->setAreaCode(Area::AREA_ADMINHTML);
+            // Throws when no area code has been set yet.
+            $this->appState->getAreaCode();
         } catch (LocalizedException $e) {
-            // Area code already set — nothing to do.
+            $this->appState->setAreaCode(Area::AREA_ADMINHTML);
         }
     }
 }

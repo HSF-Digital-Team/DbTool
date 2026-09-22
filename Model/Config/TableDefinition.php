@@ -16,7 +16,7 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
 class TableDefinition implements TableDefinitionInterface
 {
     /**
-     * @param array $data
+     * @param array<string,mixed> $data
      * @throws LocalizedException
      */
     public function __construct(
@@ -87,7 +87,7 @@ class TableDefinition implements TableDefinitionInterface
      * Normalize a column => strategy map field.
      *
      * @param string $field
-     * @return array<string, string>
+     * @return array<string,string>
      */
     private function normalizeStrategyMap(string $field): array
     {
@@ -196,7 +196,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetFilter
      *
-     * @return array
+     * @return array<string,mixed>
      */
     public function getFilter(): array
     {
@@ -217,7 +217,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetLookupSources
      *
-     * @return array|array[]
+     * @return array<int,array{table:string,column:string}>
      */
     public function getLookupSources(): array
     {
@@ -240,7 +240,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetReferences
      *
-     * @return array|array[]
+     * @return array<int,array{column:string,table:string}>
      */
     public function getReferences(): array
     {
@@ -270,7 +270,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetUniqueKey
      *
-     * @return array|string[]
+     * @return string[]
      */
     public function getUniqueKey(): array
     {
@@ -301,7 +301,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetCloneRegenerate
      *
-     * @return array|string[]
+     * @return array<string,string>
      */
     public function getCloneRegenerate(): array
     {
@@ -311,7 +311,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetCloneMirror
      *
-     * @return array|string[]
+     * @return array<string,string>
      */
     public function getCloneMirror(): array
     {

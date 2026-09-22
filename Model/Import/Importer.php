@@ -60,9 +60,9 @@ class Importer
      * @param callable|null $progress fn(string $table, int $written, string $status): void
      * @param bool $cloneMode when true, force-create a new customer (+footprint) instead of matching
      *                        and reusing an existing one; unique business keys are regenerated
-     * @return array{directory: string, tables: array, skipped: string[], remapped: int,
-     *               deferred_updates: int, clone_token: ?string, new_customer_ids: array,
-     *               new_customers: array<int, array{id: mixed, email: mixed}>}
+     * @return array{directory: string, tables: array<string,int>, skipped: string[], remapped: int,
+     *               deferred_updates: int, clone_token: ?string, new_customer_ids: array<int,mixed>,
+     *               new_customers: array<int,array{id:mixed,email:mixed}>}
      * @throws LocalizedException|Throwable
      */
     public function import(int $customerId, ?callable $progress = null, bool $cloneMode = false): array
@@ -177,8 +177,8 @@ class Importer
      * caller can tell you exactly which customer to look at (a fresh one in clone mode).
      *
      * @param AdapterInterface $connection
-     * @param int[]|string[] $customerIds target customer_entity ids
-     * @return array
+     * @param array<int,mixed> $customerIds target customer_entity ids
+     * @return array<int,array{id:mixed,email:mixed}>
      */
     private function resolveCustomers(AdapterInterface $connection, array $customerIds): array
     {
@@ -201,16 +201,16 @@ class Importer
      *
      * @param AdapterInterface $connection
      * @param TableDefinitionInterface $definition
-     * @param array $rows
-     * @param array $order table => position in the import order
-     * @param array $idMap by-ref, accumulated across tables
-     * @param array $reused by-ref, accumulated across tables
-     * @param array $dropped by-ref, rows not imported, accumulated across tables
-     * @param array $deferred by-ref, reference rewrites to apply after all tables are written
-     * @param array $regen by-ref, clone-mode strategy => oldValue => newValue
+     * @param array<int,array<string,mixed>> $rows
+     * @param array<string,int> $order table => position in the import order
+     * @param array<string,array<string,mixed>> $idMap by-ref, accumulated across tables
+     * @param array<string,array<string,true>> $reused by-ref, accumulated across tables
+     * @param array<string,array<string,true>> $dropped by-ref, rows not imported, accumulated across tables
+     * @param array<int,array<string,mixed>> $deferred by-ref, reference rewrites applied after all tables
+     * @param array<string,array<string,mixed>> $regen by-ref, clone-mode strategy => oldValue => newValue
      * @param bool $cloneMode force-new mode
      * @param string $cloneToken per-run token used to regenerate unique business keys
-     * @return array
+     * @return array{written:int,remapped:int,matched:int,skipped:int,cloned:bool}
      */
     private function writeTable(
         AdapterInterface $connection,
@@ -415,11 +415,11 @@ class Importer
             if ($forceNewId || $collision) {
                 unset($row[$pk]);
                 $connection->insert($tableName, $row);
-                $targetPk = $connection->lastInsertId($tableName);
+                $targetPk = $this->lastInsertId($connection);
                 $remapped++;
             } else {
                 $connection->insert($tableName, $row);
-                $targetPk = $pkValue !== null ? $pkValue : $connection->lastInsertId($tableName);
+                $targetPk = $pkValue !== null ? $pkValue : $this->lastInsertId($connection);
             }
             $written++;
 
@@ -455,8 +455,8 @@ class Importer
      * the number of UPDATEs issued.
      *
      * @param AdapterInterface $connection
-     * @param array $deferred
-     * @param array $idMap
+     * @param array<int,array<string,mixed>> $deferred
+     * @param array<string,array<string,mixed>> $idMap
      * @return int
      */
     private function applyDeferredReferences(AdapterInterface $connection, array $deferred, array $idMap): int
@@ -478,12 +478,28 @@ class Importer
     }
 
     /**
+     * LastInsertId
+     *
+     * The auto-increment id allocated by the last INSERT on this connection. Read through SQL so
+     * that only the AdapterInterface contract is relied upon (lastInsertId() is adapter-specific).
+     *
+     * @param AdapterInterface $connection
+     * @return string|null
+     */
+    private function lastInsertId(AdapterInterface $connection): ?string
+    {
+        /** @var string|false|null $id */
+        $id = $connection->fetchOne('SELECT LAST_INSERT_ID()');
+        return ($id === false || $id === null || $id === '0' || $id === '') ? null : (string)$id;
+    }
+
+    /**
      * HasSelfParent
      *
      * 1 when the row sets any self-reference column (a child), 0 when none are set (a parent) —
      * used to order parents before children for self-referential tables.
      *
-     * @param array $row
+     * @param array<string,mixed> $row
      * @param string[] $selfReferences
      * @return int
      */
@@ -528,8 +544,8 @@ class Importer
      * @param AdapterInterface $connection
      * @param string $tableName
      * @param string $pk
-     * @param array $prepared
-     * @return array
+     * @param array<int,array<string,mixed>> $prepared
+     * @return array<string,true>
      */
     private function loadTakenPks(AdapterInterface $connection, string $tableName, string $pk, array $prepared): array
     {
@@ -563,7 +579,7 @@ class Importer
      * @param string $tableName
      * @param string $pk
      * @param string[] $uniqueKey
-     * @param array $row
+     * @param array<string,mixed> $row
      * @return string|null
      */
     private function findByUniqueKey(
@@ -585,6 +601,7 @@ class Importer
         $select->limit(1);
 
         // fetchOne() returns false (not null) when no row matches.
+        /** @var string|false|null $found */
         $found = $connection->fetchOne($select);
         return ($found === false || $found === null) ? null : (string)$found;
     }
@@ -592,7 +609,7 @@ class Importer
     /**
      * StatusLabel
      *
-     * @param array $stats
+     * @param array{written:int,remapped:int,matched:int,skipped:int,cloned:bool} $stats
      * @return string
      */
     private function statusLabel(array $stats): string

@@ -16,7 +16,7 @@ use EcomEU\DbTool\Api\TableProcessorInterface;
  */
 class ProcessorProvider
 {
-    /** @var array */
+    /** @var array<string,TableProcessorInterface> */
     private array $instances = [];
 
     /**
