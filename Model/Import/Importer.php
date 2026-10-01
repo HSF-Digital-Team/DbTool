@@ -37,6 +37,9 @@ use Throwable;
  */
 class Importer
 {
+    /** Column auto-bumped by MySQL on UPDATE; preserved when back-references are rewritten. */
+    private const string UPDATED_AT = 'updated_at';
+
     /**
      * @param ResourceConnection $resourceConnection
      * @param MapProviderInterface $mapProvider
@@ -231,6 +234,9 @@ class Importer
         $columns = array_keys($describe);
         $pk = $definition->getPrimaryKey();
         $pkIsIdentity = !empty($describe[$pk]['IDENTITY']);
+        // MySQL's ON UPDATE CURRENT_TIMESTAMP would silently bump updated_at when the deferred
+        // back-references are rewritten; the exported value is re-asserted in that UPDATE.
+        $hasUpdatedAt = isset($describe[self::UPDATED_AT]);
 
         // Split the references three ways:
         //  - immediate: the referenced table imported earlier -> remapped in the prep phase;
@@ -264,8 +270,8 @@ class Importer
         $idMap[$table] = $idMap[$table] ?? [];
         $written = $matched = $remapped = $skippedRows = 0;
 
-        // Prepare rows: keep real columns, empty->NULL, remap references. Preserve the original
-        // primary key (before any reference remap can touch it) for the id map key.
+        // Prepare rows: keep real columns, normalise empties, remap references. Preserve the
+        // original primary key (before any reference remap can touch it) for the id map key.
         $prepared = [];
         foreach ($rows as $row) {
             $clean = [];
@@ -274,7 +280,13 @@ class Importer
                     continue;
                 }
                 $value = $row[$column];
-                if ($value === '' && !empty($describe[$column]['NULLABLE'])) {
+                // NULL travels as the CSV NULL marker, so an empty cell is a real empty string for
+                // a text column. For a typed (int/decimal/datetime…) column '' is never valid: it
+                // is read as NULL, which also keeps files written before the marker importable.
+                if ($value === ''
+                    && !empty($describe[$column]['NULLABLE'])
+                    && !$this->isTextColumn($describe[$column])
+                ) {
                     $value = null;
                 }
                 $clean[$column] = $value;
@@ -309,10 +321,11 @@ class Importer
             }
 
             // Clone mode: mirror the business-key values decided by a force-new entity imported
-            // earlier (kept or regenerated), so every copy of the value stays consistent: the grid
-            // rows (clone_regenerate on a non-clone_new table) and the denormalised copies such as
-            // quote.customer_email / sales_order_address.email (clone_mirror). The deciding parent
-            // (clone_new) is handled at insert time below, not here.
+            // earlier (kept or regenerated), so every copy of the value stays consistent — the
+            // denormalised copies such as customer_grid_flat.email / quote.customer_email /
+            // sales_order_grid.increment_id (clone_mirror). A clone_regenerate on a non-clone_new
+            // table behaves the same way. The deciding parent (clone_new) is handled at insert time
+            // below, not here.
             $mirror = $cloneNew ? $cloneMirror : $cloneMirror + $cloneRegenerate;
             foreach ($mirror as $col => $strategy) {
                 if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== '') {
@@ -433,6 +446,7 @@ class Importer
                         'table' => $tableName,
                         'pk' => $pk,
                         'target_pk' => $targetPk,
+                        'updated_at' => $hasUpdatedAt ? ($row[self::UPDATED_AT] ?? null) : null,
                     ];
                 }
             }
@@ -467,9 +481,13 @@ class Importer
             if ($new === null || (string)$new === (string)$entry['old_value']) {
                 continue;
             }
+            $bind = [$entry['column'] => $new];
+            if (($entry['updated_at'] ?? null) !== null) {
+                $bind[self::UPDATED_AT] = $entry['updated_at'];
+            }
             $connection->update(
                 $entry['table'],
-                [$entry['column'] => $new],
+                $bind,
                 [$connection->quoteIdentifier($entry['pk']) . ' = ?' => $entry['target_pk']]
             );
             $updates++;
@@ -604,6 +622,21 @@ class Importer
         /** @var string|false|null $found */
         $found = $connection->fetchOne($select);
         return ($found === false || $found === null) ? null : (string)$found;
+    }
+
+    /**
+     * IsTextColumn
+     *
+     * Whether a column (as described by the adapter) holds free text, i.e. '' is a legitimate value.
+     *
+     * @param array<string,mixed> $column
+     * @return bool
+     */
+    private function isTextColumn(array $column): bool
+    {
+        $type = strtolower((string)($column['DATA_TYPE'] ?? ''));
+        return str_contains($type, 'char') || str_contains($type, 'text') || str_contains($type, 'blob')
+            || in_array($type, ['enum', 'set', 'json'], true);
     }
 
     /**

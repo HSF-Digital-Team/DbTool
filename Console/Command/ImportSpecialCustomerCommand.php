@@ -62,7 +62,8 @@ class ImportSpecialCustomerCommand extends Command
                 null,
                 InputOption::VALUE_OPTIONAL,
                 'Execution mode: "restore" (default; match & reuse existing rows) or '
-                . '"clone" (force-create a NEW customer + footprint with regenerated email/order numbers)',
+                . '"clone" (force-create a NEW customer + footprint; email/order numbers are regenerated '
+                . 'only if they collide on the target)',
                 self::MODE_RESTORE
             );
         parent::configure();
@@ -101,7 +102,8 @@ class ImportSpecialCustomerCommand extends Command
 
         if ($cloneMode) {
             $output->writeln(sprintf(
-                '<info>Cloning customer %d as a NEW customer (email + order numbers will be regenerated)...</info>',
+                '<info>Cloning customer %d as a NEW customer '
+                . '(email + order numbers regenerated only on collision)...</info>',
                 $customerId
             ));
         } else {

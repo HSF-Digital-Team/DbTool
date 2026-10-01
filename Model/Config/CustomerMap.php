@@ -14,18 +14,25 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
  *
  * Relationship recap (parent -> child column that references it):
  *   customer_entity.entity_id
+ *     ├─ customer_entity_{datetime,decimal,int,text,varchar}.entity_id
  *     ├─ customer_grid_flat.entity_id
  *     ├─ customer_address_entity.parent_id  (customer_entity.default_billing/shipping point back)
+ *     │    └─ customer_address_entity_{datetime,decimal,int,text,varchar}.entity_id
  *     └─ contrat_aladin_clients.customer_id
  *   quote.customer_id -> customer_entity.entity_id
  *     ├─ quote_address.quote_id
- *     ├─ quote_item.quote_id
+ *     ├─ quote_item.quote_id  (parent_item_id self-link)
+ *     │    └─ quote_item_option.item_id
  *     └─ quote_payment.quote_id
  *   sales_order.customer_id -> customer_entity.entity_id
- *     ├─ sales_order_address.parent_id
- *     ├─ sales_order_item.order_id
+ *     ├─ sales_order_address.parent_id  (sales_order.billing/shipping_address_id point back)
+ *     ├─ sales_order_item.order_id  (parent_item_id self-link, quote_item_id -> quote_item)
  *     ├─ sales_order_payment.parent_id
  *     └─ sales_order_grid.entity_id
+ *   Lookups (exported late, imported first):
+ *     customer_group        <- customer_entity.group_id, quote/sales_order.customer_group_id
+ *     catalog_product_entity <- quote_item/sales_order_item.product_id
+ *       └─ EAV values, website, stock item/status, tier price (see productChildren())
  */
 class CustomerMap
 {
