@@ -1,0 +1,236 @@
+name: Quality
+on:
+  pull_request:
+  # Standalone module repo: run on every PR whatever the base branch. Add a
+  # `branches:` filter here if the module uses a fixed flow (e.g. main/develop).
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same PR so a rapid string of pushes doesn't burn
+# minutes on checks for commits nobody will ever see the result of.
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PHP_VERSION: '8.4'
+  # Magento packages aren't on Packagist. The Mage-OS mirror serves the same
+  # magento/* packages without auth keys; switch to https://repo.magento.com/ (and
+  # put the keys in the COMPOSER_AUTH secret) if you'd rather use the official repo.
+  MAGENTO_COMPOSER_REPO: https://mirror.mage-os.org/
+
+jobs:
+  # In the main project these tools ran against the project's own dependency tree.
+  # Here the module repo IS the root package: composer resolves the module's own
+  # composer.json (magento/framework & co + require-dev tools) into ./vendor.
+  # The job name below may be a required status check in branch protection - if you
+  # rename it, update that rule in the same change.
+  phpcs:
+    name: Static Analysis (PHPCS + PHPStan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The module root is what used to be app/code/<Vendor>/<Module>, so the
+      # app/code/** prefixes become repo-root globs (vendor/ is never committed).
+      - name: Get changed files (Hyva phpcs scope)
+        id: changed-hyva
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            **/*.php
+            **/*.phtml
+      - name: Get changed files (PHPStan scope)
+        id: changed-phpstan
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            **/*.php
+      # Dependency, PHPUnit config or workflow changes can break tests without
+      # touching a test file.
+      - name: Get changed files (unit test scope)
+        id: changed-tests
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            **/*.php
+            composer.json
+            composer.lock
+            phpunit.xml.dist
+            phpstan.neon.dist
+            .github/workflows/quality.yml
+      - name: Decide what to run
+        id: gate
+        run: |
+          if [ "${{ steps.changed-phpstan.outputs.any_changed }}" = "true" ] \
+             || [ "${{ steps.changed-tests.outputs.any_changed }}" = "true" ]; then
+            echo "install=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "install=false" >> "$GITHUB_OUTPUT"
+            echo "No PHP or dependency changes; skipping composer install."
+          fi
+          # Not every module ships unit tests
+          if [ -d Test/Unit ] && [ -f phpunit.xml.dist ]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Hyva phpcs is a stand-alone install and doesn't need the module's vendor/,
+      # so a .phtml-only change never pays for the composer install below.
+      - name: Set up PHP
+        if: steps.gate.outputs.install == 'true' || steps.changed-hyva.outputs.any_changed == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+          # Platform requirements of magento/framework
+          extensions: bcmath, gd, intl, soap, sockets, sodium, xsl, zip
+          tools: composer:v2, cs2pr
+
+      - name: Get Composer cache directory
+        if: steps.gate.outputs.install == 'true'
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      # Module repos usually don't commit composer.lock, so key on composer.json.
+      - name: Cache Composer dependencies
+        if: steps.gate.outputs.install == 'true'
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-php${{ env.PHP_VERSION }}-composer-${{ hashFiles('composer.json', 'composer.lock') }}
+          restore-keys: ${{ runner.os }}-php${{ env.PHP_VERSION }}-composer-
+
+      # --no-plugins: magento-composer-installer & co would try to deploy the module
+      # into a Magento root that doesn't exist here; plain autoloading is all we need.
+      # COMPOSER_AUTH only matters if the module requires private packages (other
+      # internal modules on GitHub, Hyva, Amasty...) - e.g.
+      # {"github-oauth":{"github.com":"<token>"},"http-basic":{"hyva-themes.repo.packagist.com":{...}}}
+      - name: Install dependencies
+        if: steps.gate.outputs.install == 'true'
+        id: install
+        env:
+          COMPOSER_AUTH: ${{ secrets.COMPOSER_AUTH }}
+        run: |
+          composer config --no-plugins repositories.magento composer "$MAGENTO_COMPOSER_REPO"
+          if [ -f composer.lock ]; then
+            composer install --prefer-dist --no-interaction --no-progress --no-plugins
+          else
+            composer update --prefer-dist --no-interaction --no-progress --no-plugins
+          fi
+
+      # Not pinned in composer.lock, so it's cached on a manually-bumped version
+      # string instead of a lockfile hash - bump HYVA_CS_CACHE_KEY to force a
+      # refresh (e.g. after a hyva-coding-standard release you want to pick up).
+      - name: Cache Hyva coding standard
+        if: steps.changed-hyva.outputs.any_changed == 'true'
+        id: hyva-cs-cache
+        uses: actions/cache@v6
+        with:
+          path: /tmp/hyva-cs
+          key: hyva-cs-v1
+
+      - name: Install Hyva coding standard (stand-alone)
+        if: steps.changed-hyva.outputs.any_changed == 'true' && steps.hyva-cs-cache.outputs.cache-hit != 'true'
+        run: composer create-project --no-plugins --no-dev --no-interaction hyva-themes/hyva-coding-standard /tmp/hyva-cs
+
+      # The checks below use !cancelled() so a failure in one still lets the others
+      # report, giving the full picture in a single run instead of fix-push-repeat.
+      - name: Validate code directory (Hyva)
+        if: ${{ !cancelled() && steps.changed-hyva.outputs.any_changed == 'true' }}
+        env:
+          ALL_CHANGED_FILES: ${{ steps.changed-hyva.outputs.all_changed_files }}
+        run: |
+          /tmp/hyva-cs/vendor/bin/phpcs --ignore=*/node_modules/*,*/vendor/* --standard=HyvaThemes --extensions=phtml,php --exclude=Generic.Files.LineLength,Magento2.Annotation.MethodAnnotationStructure $ALL_CHANGED_FILES
+        id: phpcs-output
+
+      # Requires phpstan/phpstan + bitexpert/phpstan-magento in the module's
+      # require-dev and a phpstan.neon.dist at the repo root (bitexpert's extension
+      # resolves Factories/Proxies/Interceptors that would otherwise be generated/).
+      - name: Run PHPStan
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.changed-phpstan.outputs.any_changed == 'true' }}
+        env:
+          CHANGED_FILES: ${{ steps.changed-phpstan.outputs.all_changed_files }}
+        run: vendor/bin/phpstan analyse --no-progress --error-format=checkstyle -- $CHANGED_FILES | cs2pr
+
+      # Runs the module's whole suite, not just changed files: a dependency bump can
+      # break any test, and the suite takes seconds. Suite is defined in phpunit.xml.dist.
+      - name: Run unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && steps.gate.outputs.has_tests == 'true' && steps.changed-tests.outputs.any_changed == 'true' }}
+        run: vendor/bin/phpunit
+
+  php-compatibility:
+    name: PHPCompatibility
+    runs-on: ubuntu-latest
+    steps:
+      # The composite action below does its own checkout + PHP setup + composer
+      # require unconditionally, with no file filter of its own - gate it here so
+      # PRs that touch no PHP pay for none of that.
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Get changed PHP files
+        id: changed-compat
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            **/*.php
+      - name: Run PHPCompatibility
+        if: steps.changed-compat.outputs.any_changed == 'true'
+        uses: HSF-Digital-Team/github-actions/php-compatibility@main
+
+  # The project ran stylelint from the theme's tailwind/ dir (its node_modules and
+  # .stylelintrc.json). A module repo has no theme, so it carries its own minimal
+  # package.json/package-lock.json + .stylelintrc.json at the root (copy the theme's
+  # config and the devDependencies it extends). Modules without them skip the job.
+  stylelint:
+    name: CSS Style Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Get changed CSS files
+        id: changed-files-yaml
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            view/**/*.css
+          files_ignore: |
+            view/*/tailwind/generated/**
+            **/node_modules/**
+      - name: Decide what to run
+        id: gate
+        run: |
+          if [ "${{ steps.changed-files-yaml.outputs.any_changed }}" = "true" ] \
+             && [ -f package-lock.json ] && [ -f .stylelintrc.json ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No CSS changes or no stylelint setup in this module; skipping."
+          fi
+
+      - name: Setup Node
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        if: steps.gate.outputs.run == 'true'
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Run stylelint on changed files
+        if: steps.gate.outputs.run == 'true'
+        env:
+          ALL_CHANGED_FILES: ${{ steps.changed-files-yaml.outputs.all_changed_files }}
+        run: |
+          node_modules/.bin/stylelint \
+            --allow-empty-input \
+            --config .stylelintrc.json \
+            -- $ALL_CHANGED_FILES

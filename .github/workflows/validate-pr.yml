@@ -1,0 +1,23 @@
+name: Validate PR
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+    # Module repos don't follow the project's staging/staging-ecs/production flow -
+    # validate every PR regardless of base branch (add a `branches:` filter if you
+    # only want it on e.g. main/develop).
+permissions:
+  pull-requests: read
+concurrency:
+  group: validate-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  validate-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
