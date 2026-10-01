@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Integration tests for EcomEU_DbTool. They run the real engine against the database of the Magento
+  install the module is deployed in; every test runs inside a transaction that is rolled back.
+  From the Magento root:  vendor/bin/phpunit -c app/code/EcomEU/DbTool/Test/Integration/phpunit.xml
+-->
+<phpunit bootstrap="bootstrap.php" colors="true" failOnWarning="false">
+    <testsuites>
+        <testsuite name="EcomEU_DbTool integration">
+            <directory>.</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

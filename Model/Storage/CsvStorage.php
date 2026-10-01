@@ -76,6 +76,22 @@ class CsvStorage
     }
 
     /**
+     * Remove the customer's export directory (used when an export turns out empty).
+     *
+     * @param int $customerId
+     * @return void
+     * @throws FileSystemException
+     */
+    public function removeExportDir(int $customerId): void
+    {
+        $relDir = self::EXPORT_BASE . '/' . $customerId;
+        $var = $this->getVarDirectory();
+        if ($var->isExist($relDir)) {
+            $var->delete($relDir);
+        }
+    }
+
+    /**
      * Zip Export
      *
      * Bundle every CSV in the customer's export directory into a single sibling zip

@@ -41,6 +41,10 @@ Clone token: k3f9zq
 - A mapped table whose CSV is **missing** from the import directory is skipped and listed at the end
   (`Skipped (no CSV present): …`); a header-only CSV imports zero rows. Both are harmless, so a
   hand-trimmed import directory works.
+- A mapped table that **does not exist on the database** (a store-specific table such as
+  `contrat_aladin_clients` on another install) is skipped and listed, on export and on import.
+- Exporting a customer that **does not exist** (no table yields a row) fails with an error and
+  leaves no export directory behind.
 - SQL `NULL` is written to CSV as `\N` (MySQL's convention) so that `NULL` and the empty string
   survive the round trip as distinct values. A plain empty cell stays an empty string for a text
   column; for a typed column (int, decimal, datetime…) it is imported as `NULL`, so files written
@@ -142,6 +146,15 @@ target ids are known. That `UPDATE` re-asserts the exported `updated_at`, so MyS
 `ON UPDATE CURRENT_TIMESTAMP` does not silently bump it. Rows reused from the target keep their own
 links.
 
+**Dangling links are nulled.** A cross-link whose target row is unknown to the run (not in the
+export, e.g. the quote an order came from was purged; or skipped because its parent was reused, e.g.
+the address book entry behind `quote_address.customer_address_id` when the customer already existed)
+is looked up on the target: if that id exists there it is kept (on a same-DB restore it is the right
+row), otherwise the column is set to `NULL` when nullable, instead of pointing at whatever row owns
+that id on the other database. The run reports how many links were nulled. The structural links are
+never touched: a child's link to its parent and a direct table's `customer_column` must resolve, or
+the run fails on the foreign key.
+
 **Products** (`catalog_product_entity`, a `lookup` from the item `product_id`s) export *after* the
 items but import *before* them (priorities 70/71 vs 5/6), so `sales_order_item.product_id` /
 `quote_item.product_id` are remapped to the target product matched by `sku`. Product sub-tables
@@ -182,6 +195,20 @@ stub-inserted (missing-sku) product receives them.
 > `contrat_client` alone, so it must **not** be `clone_new`; minting a new business id (and any
 > dependent rows) is out of scope. Its `contract_code` / `contrat_client_type_id` reference
 > `contrat_aladin`, which is outside the map and must already exist on the target.
+
+## Tests
+
+`Test/Integration/` holds PHPUnit tests that run the real engine against the database of the Magento
+install the module is deployed in. Each test builds a complete customer footprint (customer, address,
+product, cart with parent/child lines and an option, order with addresses, lines and payment) inside
+a transaction that is rolled back afterwards, so nothing is left behind. Covered: the export writes
+one CSV per mapped table with the right rows and the delicate values intact; import onto the same
+account (reused, nothing duplicated), onto taken ids (fresh ids, every link rewritten), onto a free
+account (ids kept), and clone mode. From the Magento root:
+
+```bash
+vendor/bin/phpunit -c app/code/EcomEU/DbTool/Test/Integration/phpunit.xml
+```
 
 ## Extending the map from another module
 
@@ -228,8 +255,9 @@ around that table's rows.
 - **Customer group is synced.** `customer_group` is a `lookup` gathered from the group ids referenced
   by the customer/quotes/orders. On import it is **matched by `customer_group_code`** to reuse the
   target's group id (standard groups always match; a custom group inserts with a fresh id), and
-  `customer_entity.group_id` / `quote`.`customer_group_id` / `sales_order`.`customer_group_id` are
-  remapped to it. It exports late (after orders) but imports first — the split-priority pattern.
+  `customer_entity.group_id` / `quote`.`customer_group_id` / `sales_order`.`customer_group_id` /
+  `catalog_product_entity_tier_price`.`customer_group_id` are remapped to it. It exports last (after
+  the tier prices) but imports first — the split-priority pattern.
 - **Product tier prices are synced.** `catalog_product_entity_tier_price` is a product `child`
   (`skip_if_parent_reused`), so existing products keep their tier prices and only a stub-inserted
   (missing-sku) product receives them; `customer_group_id` on each row is remapped to the matched
@@ -251,6 +279,24 @@ around that table's rows.
   a sku has a different `product_id`, an embedded selection can be stale.
 - Import expects referenced rows in tables **outside** the map (store, website, tax class, …) to
   already exist in the target DB.
+
+### Known limitations
+
+- **Restore never updates an existing row.** A customer already on the target is matched and left
+  as-is: new addresses, changed attributes or a new default address on the source are **not**
+  applied, and their orders placed since are imported but linked to no address book entry. To refresh
+  a customer that already exists locally, use `--mode=clone` (a complete fresh copy) or delete the
+  local customer first.
+- **Real order numbers are imported.** The target's `sequence_order_<store>` counter is not advanced,
+  so an order placed later on the target can eventually reach an imported `increment_id` and fail on
+  the unique index. Irrelevant for a throw-away dev DB; bump the sequence if the target keeps taking
+  orders.
+- **Memory is proportional to the largest table.** Each table is read and written as one array
+  (roughly 1 KB per row). The product EAV tables dominate: a customer with 2 000 distinct products
+  pulls ~700 000 rows, which exported in ~11 s under a 10 GB CLI memory limit; keep that in mind on a
+  tight `memory_limit`.
+- **Stub products have no MSI stock.** `inventory_source_item` (keyed by `sku`) is not mapped, so a
+  product inserted because its `sku` was missing has no source item; existing products are unaffected.
 
 ### Not synced by default (opt-in — not EAV value data)
 

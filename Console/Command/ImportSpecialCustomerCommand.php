@@ -133,6 +133,18 @@ class ImportSpecialCustomerCommand extends Command
         if ($result['skipped'] !== []) {
             $output->writeln('<comment>Skipped (no CSV present): ' . implode(', ', $result['skipped']) . '</comment>');
         }
+        if ($result['absent'] !== []) {
+            $output->writeln(
+                '<comment>Not on this database (skipped): ' . implode(', ', $result['absent']) . '</comment>'
+            );
+        }
+        if (!empty($result['unlinked'])) {
+            $output->writeln(sprintf(
+                '<comment>%d link(s) to rows that exist neither in the export nor on this database were set to NULL.'
+                . '</comment>',
+                $result['unlinked']
+            ));
+        }
         if (!empty($result['deferred_updates'])) {
             $output->writeln(sprintf(
                 '<info>%d back-reference(s) rewritten after import (default addresses, order address ids).</info>',

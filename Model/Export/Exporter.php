@@ -11,6 +11,7 @@ use EcomEU\DbTool\Model\Storage\CsvStorage;
 use Magento\Framework\App\ResourceConnection;
 use Magento\Framework\DB\Adapter\AdapterInterface;
 use Magento\Framework\Exception\LocalizedException;
+use Magento\Framework\Phrase;
 
 /**
  * Export engine. Walks the customer data map in export-priority order, resolving each table's
@@ -40,9 +41,14 @@ class Exporter
     /**
      * Export the full footprint of one customer.
      *
+     * A mapped table that does not exist on this database (a store-specific table on another
+     * install) is skipped and reported, not written. If no table yields a single row the customer
+     * does not exist: the empty export directory is removed and an exception is thrown.
+     *
      * @param int $customerId
-     * @param callable|null $progress fn(string $table, int $rowCount): void
-     * @return array{directory:string,tables:array<string,int>} directory + per-table row counts
+     * @param callable|null $progress fn(string $table, int $rowCount, string $status): void
+     * @return array{directory:string,tables:array<string,int>,absent:string[]} directory +
+     *         per-table row counts + tables absent on this database
      * @throws LocalizedException
      */
     public function export(int $customerId, ?callable $progress = null): array
@@ -56,9 +62,17 @@ class Exporter
         // collected[table][column] => distinct values, feeding child WHERE ... IN (...) clauses.
         $collected = [];
         $results = [];
+        $absent = [];
 
         foreach ($definitions as $definition) {
             $table = $definition->getTable();
+            if (!$connection->isTableExists($this->resourceConnection->getTableName($table))) {
+                $absent[] = $table;
+                if ($progress !== null) {
+                    $progress($table, 0, 'absent');
+                }
+                continue;
+            }
             $select = $this->relationResolver->buildSelect($connection, $definition, $customerId, $collected);
             $rows = $select === null ? [] : $connection->fetchAll($select);
 
@@ -80,11 +94,19 @@ class Exporter
 
             $results[$table] = count($rows);
             if ($progress !== null) {
-                $progress($table, count($rows));
+                $progress($table, count($rows), 'exported');
             }
         }
 
-        return ['directory' => $absoluteDir, 'tables' => $results];
+        if (array_sum($results) === 0) {
+            $this->storage->removeExportDir($customerId);
+            throw new LocalizedException(new Phrase(
+                'Tool_DbTool: no data found for customer %1 (does the customer exist?).',
+                [$customerId]
+            ));
+        }
+
+        return ['directory' => $absoluteDir, 'tables' => $results, 'absent' => $absent];
     }
 
     /**

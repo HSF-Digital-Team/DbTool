@@ -30,7 +30,8 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
  *     ├─ sales_order_payment.parent_id
  *     └─ sales_order_grid.entity_id
  *   Lookups (exported late, imported first):
- *     customer_group        <- customer_entity.group_id, quote/sales_order.customer_group_id
+ *     customer_group        <- customer_entity.group_id, quote/sales_order.customer_group_id,
+ *                              catalog_product_entity_tier_price.customer_group_id
  *     catalog_product_entity <- quote_item/sales_order_item.product_id
  *       └─ EAV values, website, stock item/status, tier price (see productChildren())
  */
@@ -274,8 +275,9 @@ class CustomerMap
             ],
 
             // --- Customer group the customer/quotes/orders belong to ---
-            // Looked up from the group ids referenced above. Exported LATE (65, after orders) so all
-            // those ids are collected, but imported FIRST (4) so group_id / customer_group_id can be
+            // Looked up from every group id referenced in the footprint (customer, carts, orders and
+            // the tier prices of the exported products). Exported LAST (72, after the tier prices) so
+            // all those ids are collected, but imported FIRST (4) so each customer_group_id can be
             // remapped to the target group matched by code.
             'customer_group' => [
                 'table' => 'customer_group',
@@ -285,9 +287,10 @@ class CustomerMap
                     ['table' => 'customer_entity', 'column' => 'group_id'],
                     ['table' => 'quote', 'column' => 'customer_group_id'],
                     ['table' => 'sales_order', 'column' => 'customer_group_id'],
+                    ['table' => 'catalog_product_entity_tier_price', 'column' => 'customer_group_id'],
                 ],
                 'unique_key' => ['customer_group_code'],
-                'export_priority' => 65,
+                'export_priority' => 72,
                 'import_priority' => 4,
             ],
 
