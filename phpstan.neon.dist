@@ -1,0 +1,11 @@
+includes:
+    - vendor/bitexpert/phpstan-magento/extension.neon
+
+parameters:
+    # Keep in sync with the main project's phpstan level
+    level: 6
+    paths:
+        - .
+    excludePaths:
+        - vendor/*
+        - node_modules/*

@@ -78,8 +78,8 @@ class ExportSpecialCustomerCommand extends Command
         try {
             $result = $this->exporter->export(
                 $customerId,
-                static function (string $table, int $count) use ($output): void {
-                    $output->writeln(sprintf('  %-28s %d row(s)', $table, $count));
+                static function (string $table, int $count, string $status) use ($output): void {
+                    $output->writeln(sprintf('  %-36s %-8s %d row(s)', $table, $status, $count));
                 }
             );
         } catch (Throwable $e) {
@@ -94,6 +94,11 @@ class ExportSpecialCustomerCommand extends Command
             count($result['tables']),
             $result['directory']
         ));
+        if ($result['absent'] !== []) {
+            $output->writeln(
+                '<comment>Not on this database (skipped): ' . implode(', ', $result['absent']) . '</comment>'
+            );
+        }
 
         try {
             $zipPath = $this->exporter->zip($customerId);

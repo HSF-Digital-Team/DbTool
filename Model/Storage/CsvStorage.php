@@ -3,11 +3,9 @@ declare(strict_types=1);
 
 namespace EcomEU\DbTool\Model\Storage;
 
-use Exception;
 use Magento\Framework\App\Filesystem\DirectoryList;
 use Magento\Framework\Exception\FileSystemException;
 use Magento\Framework\Exception\LocalizedException;
-use Magento\Framework\File\Csv;
 use Magento\Framework\Filesystem;
 use Magento\Framework\Filesystem\Directory\WriteInterface;
 use Magento\Framework\Filesystem\Driver\File as FileDriver;
@@ -18,11 +16,21 @@ use ZipArchive;
 /**
  * Owns the on-disk layout and CSV dialect for both export and import, so the two sides always
  * agree. One CSV per table under var/{export|import}/specialcustomer/<customer_id>/.
+ *
+ * The CSV is written and read directly (RFC 4180: comma, double-quote enclosure, no escape
+ * character) rather than through Magento\Framework\File\Csv: the framework's writer prefixes any
+ * value starting with "=", "+" or "-" with a space as spreadsheet-injection hardening, which would
+ * corrupt phone numbers ("+33 6…") and other text on the round trip.
  */
 class CsvStorage
 {
     private const string EXPORT_BASE = 'export/specialcustomer';
     private const string IMPORT_BASE = 'import/specialcustomer';
+
+    private const string DELIMITER = ',';
+    private const string ENCLOSURE = '"';
+    /** No escape character: enclosures are doubled, so any byte sequence survives the round trip. */
+    private const string ESCAPE = '';
 
     /**
      * CSV representation of SQL NULL (MySQL's own convention), so that NULL and the empty string
@@ -39,12 +47,10 @@ class CsvStorage
      * Constructor
      *
      * @param Filesystem $filesystem
-     * @param Csv $csv
      * @param FileDriver $fileDriver
      */
     public function __construct(
         private readonly Filesystem $filesystem,
-        private readonly Csv $csv,
         private readonly FileDriver $fileDriver
     ) {
     }
@@ -67,6 +73,22 @@ class CsvStorage
         }
         $var->create($relDir);
         return $var->getAbsolutePath($relDir);
+    }
+
+    /**
+     * Remove the customer's export directory (used when an export turns out empty).
+     *
+     * @param int $customerId
+     * @return void
+     * @throws FileSystemException
+     */
+    public function removeExportDir(int $customerId): void
+    {
+        $relDir = self::EXPORT_BASE . '/' . $customerId;
+        $var = $this->getVarDirectory();
+        if ($var->isExist($relDir)) {
+            $var->delete($relDir);
+        }
     }
 
     /**
@@ -142,16 +164,39 @@ class CsvStorage
      */
     public function writeTable(string $absoluteDir, string $table, array $header, array $rows): void
     {
-        $data = [$header];
-        foreach ($rows as $row) {
-            $line = [];
-            foreach ($header as $column) {
-                $value = $row[$column] ?? null;
-                $line[] = $value === null ? self::NULL_MARKER : $value;
+        $file = $absoluteDir . '/' . $table . '.csv';
+        $resource = $this->fileDriver->fileOpen($file, 'w');
+        try {
+            $this->putLine($resource, $header, $file);
+            foreach ($rows as $row) {
+                $line = [];
+                foreach ($header as $column) {
+                    $value = $row[$column] ?? null;
+                    $line[] = $value === null ? self::NULL_MARKER : (string)$value;
+                }
+                $this->putLine($resource, $line, $file);
             }
-            $data[] = $line;
+        } finally {
+            $this->fileDriver->fileClose($resource);
         }
-        $this->csv->appendData($absoluteDir . '/' . $table . '.csv', $data);
+    }
+
+    /**
+     * Write one CSV line.
+     *
+     * Deliberately not DriverInterface::filePutCsv(): see the class docblock.
+     *
+     * @param resource $resource
+     * @param string[] $line
+     * @param string $file
+     * @throws FileSystemException
+     */
+    private function putLine($resource, array $line, string $file): void
+    {
+        // phpcs:ignore Magento2.Functions.DiscouragedFunction
+        if (fputcsv($resource, $line, self::DELIMITER, self::ENCLOSURE, self::ESCAPE) === false) {
+            throw new FileSystemException(new Phrase('Tool_DbTool: cannot write to %1', [$file]));
+        }
     }
 
     /**
@@ -165,7 +210,7 @@ class CsvStorage
      * @param string $absoluteDir
      * @param string $table
      * @return array<int,array<string,mixed>>|null
-     * @throws Exception
+     * @throws FileSystemException
      */
     public function readTable(string $absoluteDir, string $table): ?array
     {
@@ -173,27 +218,46 @@ class CsvStorage
         if (!$this->fileDriver->isFile($file)) {
             return null;
         }
-        $data = $this->csv->getData($file);
-        if (empty($data)) {
-            return [];
-        }
-        $header = array_map('strval', array_shift($data));
-        $width = count($header);
-        $rows = [];
-        foreach ($data as $line) {
-            // fgetcsv() yields [null] for a blank line.
-            if ($line === [null] || $line === [] || $line === ['']) {
-                continue;
+        $resource = $this->fileDriver->fileOpen($file, 'r');
+        try {
+            $header = null;
+            $width = 0;
+            $rows = [];
+            while (($line = $this->getLine($resource)) !== false) {
+                // fgetcsv() yields [null] for a blank line.
+                if ($line === [null] || $line === [] || $line === ['']) {
+                    continue;
+                }
+                if ($header === null) {
+                    $header = array_map('strval', $line);
+                    $width = count($header);
+                    continue;
+                }
+                $line = array_slice(array_pad($line, $width, null), 0, $width);
+                $row = [];
+                foreach ($header as $index => $column) {
+                    $value = $line[$index];
+                    $row[$column] = ($value === self::NULL_MARKER) ? null : $value;
+                }
+                $rows[] = $row;
             }
-            $line = array_slice(array_pad($line, $width, null), 0, $width);
-            $row = [];
-            foreach ($header as $index => $column) {
-                $value = $line[$index];
-                $row[$column] = ($value === self::NULL_MARKER) ? null : $value;
-            }
-            $rows[] = $row;
+        } finally {
+            $this->fileDriver->fileClose($resource);
         }
         return $rows;
+    }
+
+    /**
+     * Read one CSV line, or false at end of file.
+     *
+     * @param resource $resource
+     * @return array<int,string|null>|false
+     * @throws FileSystemException
+     */
+    private function getLine($resource): array|false
+    {
+        $line = $this->fileDriver->fileGetCsv($resource, 0, self::DELIMITER, self::ENCLOSURE, self::ESCAPE);
+        return is_array($line) ? $line : false;
     }
 
     /**

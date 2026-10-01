@@ -33,10 +33,21 @@ use Throwable;
  * customer_address_entity) cannot be rewritten at insert time; it is recorded and applied as an
  * UPDATE once every table has been written and the referenced ids are known.
  *
+ * A cross-link whose target row is unknown to the run (not exported, or skipped because its parent
+ * was reused) and does not exist on the target either is a dangling pointer: it is set to NULL when
+ * the column allows it, instead of being left pointing at whatever row owns that id on the target.
+ * The parent link of a child table and the customer link of a direct table are never touched: a
+ * missing parent must fail the run, not silently detach the rows.
+ *
+ * A mapped table that does not exist on the target database is skipped and reported.
+ *
  * The whole run is one transaction: a failure on any table rolls back everything.
  */
 class Importer
 {
+    /** Column auto-bumped by MySQL on UPDATE; preserved when back-references are rewritten. */
+    private const string UPDATED_AT = 'updated_at';
+
     /**
      * @param ResourceConnection $resourceConnection
      * @param MapProviderInterface $mapProvider
@@ -60,9 +71,9 @@ class Importer
      * @param callable|null $progress fn(string $table, int $written, string $status): void
      * @param bool $cloneMode when true, force-create a new customer (+footprint) instead of matching
      *                        and reusing an existing one; unique business keys are regenerated
-     * @return array{directory: string, tables: array<string,int>, skipped: string[], remapped: int,
-     *               deferred_updates: int, clone_token: ?string, new_customer_ids: array<int,mixed>,
-     *               new_customers: array<int,array{id:mixed,email:mixed}>}
+     * @return array{directory: string, tables: array<string,int>, skipped: string[], absent: string[],
+     *               remapped: int, unlinked: int, deferred_updates: int, clone_token: ?string,
+     *               new_customer_ids: array<int,mixed>, new_customers: array<int,array{id:mixed,email:mixed}>}
      * @throws LocalizedException|Throwable
      */
     public function import(int $customerId, ?callable $progress = null, bool $cloneMode = false): array
@@ -82,14 +93,18 @@ class Importer
         $connection = $this->resourceConnection->getConnection();
         $results = [];
         $skipped = [];
+        $absent = [];
         $remappedTotal = 0;
+        $unlinkedTotal = 0;
 
         $definitions = $this->mapProvider->getImportOrder();
         // table => position in the import order; a reference to a table with a higher position is
-        // deferred until the end of the run.
+        // deferred until the end of the run. table => primary key serves the dangling-pointer checks.
         $order = [];
+        $pkByTable = [];
         foreach ($definitions as $position => $definition) {
             $order[$definition->getTable()] = $position;
+            $pkByTable[$definition->getTable()] = $definition->getPrimaryKey();
         }
 
         // Shared across tables for the whole import.
@@ -105,6 +120,13 @@ class Importer
         try {
             foreach ($definitions as $definition) {
                 $table = $definition->getTable();
+                if (!$connection->isTableExists($this->resourceConnection->getTableName($table))) {
+                    $absent[] = $table;
+                    if ($progress !== null) {
+                        $progress($table, 0, 'absent');
+                    }
+                    continue;
+                }
                 $rows = $this->storage->readTable($absoluteDir, $table);
 
                 if ($rows === null) {
@@ -137,18 +159,21 @@ class Importer
                     $dropped,
                     $deferred,
                     $regen,
+                    $pkByTable,
                     $cloneMode,
                     $cloneToken
                 );
                 $results[$table] = $stats['written'];
                 $remappedTotal += $stats['remapped'];
+                $unlinkedTotal += $stats['unlinked'];
 
                 if ($progress !== null) {
                     $progress($table, $stats['written'], $this->statusLabel($stats));
                 }
             }
 
-            $deferredUpdates = $this->applyDeferredReferences($connection, $deferred, $idMap);
+            $deferredStats = $this->applyDeferredReferences($connection, $deferred, $idMap, $pkByTable);
+            $unlinkedTotal += $deferredStats['unlinked'];
 
             $connection->commit();
         } catch (Throwable $e) {
@@ -162,8 +187,10 @@ class Importer
             'directory' => $absoluteDir,
             'tables' => $results,
             'skipped' => $skipped,
+            'absent' => $absent,
             'remapped' => $remappedTotal,
-            'deferred_updates' => $deferredUpdates,
+            'unlinked' => $unlinkedTotal,
+            'deferred_updates' => $deferredStats['updates'],
             'clone_token' => $cloneMode ? $cloneToken : null,
             'new_customer_ids' => $newCustomerIds,
             'new_customers' => $this->resolveCustomers($connection, $newCustomerIds),
@@ -208,9 +235,10 @@ class Importer
      * @param array<string,array<string,true>> $dropped by-ref, rows not imported, accumulated across tables
      * @param array<int,array<string,mixed>> $deferred by-ref, reference rewrites applied after all tables
      * @param array<string,array<string,mixed>> $regen by-ref, clone-mode strategy => oldValue => newValue
+     * @param array<string,string> $pkByTable table => primary key column
      * @param bool $cloneMode force-new mode
      * @param string $cloneToken per-run token used to regenerate unique business keys
-     * @return array{written:int,remapped:int,matched:int,skipped:int,cloned:bool}
+     * @return array{written:int,remapped:int,matched:int,skipped:int,unlinked:int,cloned:bool}
      */
     private function writeTable(
         AdapterInterface $connection,
@@ -222,6 +250,7 @@ class Importer
         array &$dropped,
         array &$deferred,
         array &$regen,
+        array $pkByTable,
         bool $cloneMode = false,
         string $cloneToken = ''
     ): array {
@@ -231,6 +260,9 @@ class Importer
         $columns = array_keys($describe);
         $pk = $definition->getPrimaryKey();
         $pkIsIdentity = !empty($describe[$pk]['IDENTITY']);
+        // MySQL's ON UPDATE CURRENT_TIMESTAMP would silently bump updated_at when the deferred
+        // back-references are rewritten; the exported value is re-asserted in that UPDATE.
+        $hasUpdatedAt = isset($describe[self::UPDATED_AT]);
 
         // Split the references three ways:
         //  - immediate: the referenced table imported earlier -> remapped in the prep phase;
@@ -254,6 +286,7 @@ class Importer
         $uniqueKey = $definition->getUniqueKey();
         $parentTable = $definition->getParent();
         $foreignKey = $definition->getForeignKey();
+        $customerColumn = $definition->getCustomerColumn();
 
         // Clone mode: force this entity to be created new (skip the reuse lookup) and regenerate its
         // unique business-key columns so the inserts don't collide.
@@ -262,10 +295,13 @@ class Importer
         $cloneMirror = $cloneMode ? $definition->getCloneMirror() : [];
 
         $idMap[$table] = $idMap[$table] ?? [];
-        $written = $matched = $remapped = $skippedRows = 0;
+        $written = $matched = $remapped = $skippedRows = $unlinked = 0;
+        // Cross-links whose target id is unknown to this run: refTable => [ (string)id => id ],
+        // checked against the target in one query per table before the rows are inserted.
+        $pendingLookup = [];
 
-        // Prepare rows: keep real columns, empty->NULL, remap references. Preserve the original
-        // primary key (before any reference remap can touch it) for the id map key.
+        // Prepare rows: keep real columns, normalise empties, remap references. Preserve the
+        // original primary key (before any reference remap can touch it) for the id map key.
         $prepared = [];
         foreach ($rows as $row) {
             $clean = [];
@@ -274,7 +310,13 @@ class Importer
                     continue;
                 }
                 $value = $row[$column];
-                if ($value === '' && !empty($describe[$column]['NULLABLE'])) {
+                // NULL travels as the CSV NULL marker, so an empty cell is a real empty string for
+                // a text column. For a typed (int/decimal/datetime…) column '' is never valid: it
+                // is read as NULL, which also keeps files written before the marker importable.
+                if ($value === ''
+                    && !empty($describe[$column]['NULLABLE'])
+                    && !$this->isTextColumn($describe[$column])
+                ) {
                     $value = null;
                 }
                 $clean[$column] = $value;
@@ -286,33 +328,47 @@ class Importer
             // The parent's ORIGINAL id, read before remapping, keys the dropped-parent lookup.
             $rawParentId = ($parentTable !== null && $foreignKey !== null) ? ($clean[$foreignKey] ?? null) : null;
 
+            $unresolved = [];
             foreach ($references as $reference) {
                 $col = $reference['column'];
-                if (array_key_exists($col, $clean) && $clean[$col] !== null) {
-                    $key = (string)$clean[$col];
-                    if (isset($idMap[$reference['table']][$key])) {
-                        $clean[$col] = $idMap[$reference['table']][$key];
-                    }
+                if (!array_key_exists($col, $clean) || $clean[$col] === null || (string)$clean[$col] === '0') {
+                    continue;
+                }
+                $key = (string)$clean[$col];
+                if (isset($idMap[$reference['table']][$key])) {
+                    $clean[$col] = $idMap[$reference['table']][$key];
+                    continue;
+                }
+                // The structural links are never nulled: a missing parent must fail the run.
+                $structural = ($col === $foreignKey && $reference['table'] === $parentTable)
+                    || $col === $customerColumn;
+                if (!$structural && !empty($describe[$col]['NULLABLE'])) {
+                    $unresolved[] = ['column' => $col, 'ref_table' => $reference['table'], 'key' => $key];
+                    $pendingLookup[$reference['table']][$key] = $clean[$col];
                 }
             }
 
             $deferredValues = [];
             foreach ($deferredReferences as $reference) {
                 $col = $reference['column'];
-                if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== '') {
+                if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== ''
+                    && (string)$clean[$col] !== '0'
+                ) {
                     $deferredValues[] = [
                         'column' => $col,
                         'ref_table' => $reference['table'],
                         'old_value' => $clean[$col],
+                        'nullable' => !empty($describe[$col]['NULLABLE']),
                     ];
                 }
             }
 
             // Clone mode: mirror the business-key values decided by a force-new entity imported
-            // earlier (kept or regenerated), so every copy of the value stays consistent: the grid
-            // rows (clone_regenerate on a non-clone_new table) and the denormalised copies such as
-            // quote.customer_email / sales_order_address.email (clone_mirror). The deciding parent
-            // (clone_new) is handled at insert time below, not here.
+            // earlier (kept or regenerated), so every copy of the value stays consistent — the
+            // denormalised copies such as customer_grid_flat.email / quote.customer_email /
+            // sales_order_grid.increment_id (clone_mirror). A clone_regenerate on a non-clone_new
+            // table behaves the same way. The deciding parent (clone_new) is handled at insert time
+            // below, not here.
             $mirror = $cloneNew ? $cloneMirror : $cloneMirror + $cloneRegenerate;
             foreach ($mirror as $col => $strategy) {
                 if (array_key_exists($col, $clean) && $clean[$col] !== null && $clean[$col] !== '') {
@@ -339,12 +395,37 @@ class Importer
                 }
             }
 
-            $prepared[] = ['original_pk' => $originalPk, 'row' => $clean, 'deferred' => $deferredValues];
+            $prepared[] = [
+                'original_pk' => $originalPk,
+                'row' => $clean,
+                'deferred' => $deferredValues,
+                'unresolved' => $unresolved,
+            ];
         }
 
         if ($prepared === []) {
-            return ['written' => 0, 'remapped' => 0, 'matched' => 0, 'skipped' => $skippedRows, 'cloned' => $cloneNew];
+            return [
+                'written' => 0,
+                'remapped' => 0,
+                'matched' => 0,
+                'skipped' => $skippedRows,
+                'unlinked' => 0,
+                'cloned' => $cloneNew,
+            ];
         }
+
+        // Null the cross-links that point at ids absent from the target (dangling pointers). An id
+        // that does exist there is kept: on a same-DB restore it is the right row.
+        $dangling = $this->findDangling($connection, $pendingLookup, $pkByTable);
+        foreach ($prepared as &$entry) {
+            foreach ($entry['unresolved'] as $ref) {
+                if (isset($dangling[$ref['ref_table']][$ref['key']])) {
+                    $entry['row'][$ref['column']] = null;
+                    $unlinked++;
+                }
+            }
+        }
+        unset($entry);
 
         // For self-referential tables, insert parents (no self-FK set) before children so the
         // child's self-FK can be remapped to the parent's freshly assigned id. Magento's
@@ -433,6 +514,7 @@ class Importer
                         'table' => $tableName,
                         'pk' => $pk,
                         'target_pk' => $targetPk,
+                        'updated_at' => $hasUpdatedAt ? ($row[self::UPDATED_AT] ?? null) : null,
                     ];
                 }
             }
@@ -443,38 +525,94 @@ class Importer
             'remapped' => $remapped,
             'matched' => $matched,
             'skipped' => $skippedRows,
+            'unlinked' => $unlinked,
             'cloned' => $cloneNew,
         ];
+    }
+
+    /**
+     * FindDangling
+     *
+     * Among the referenced ids unknown to this run, those that do not exist on the target either.
+     *
+     * @param AdapterInterface $connection
+     * @param array<string,array<string,mixed>> $pending refTable => [ (string)id => id ]
+     * @param array<string,string> $pkByTable
+     * @return array<string,array<string,true>> refTable => [ (string)id => true ]
+     */
+    private function findDangling(AdapterInterface $connection, array $pending, array $pkByTable): array
+    {
+        $dangling = [];
+        foreach ($pending as $refTable => $ids) {
+            $pk = $pkByTable[$refTable] ?? null;
+            if ($pk === null || $ids === []) {
+                continue;
+            }
+            $select = $connection->select()
+                ->from($this->resourceConnection->getTableName($refTable), [$pk])
+                ->where($connection->quoteIdentifier($pk) . ' IN (?)', array_values($ids));
+            $existing = [];
+            foreach ($connection->fetchCol($select) as $value) {
+                $existing[(string)$value] = true;
+            }
+            foreach ($ids as $key => $id) {
+                if (!isset($existing[(string)$key])) {
+                    $dangling[$refTable][(string)$key] = true;
+                }
+            }
+        }
+        return $dangling;
     }
 
     /**
      * ApplyDeferredReferences
      *
      * Rewrite the references that point at tables imported later, now that every id is known.
-     * Only rows this run inserted are touched (a reused target row keeps its own links). Returns
-     * the number of UPDATEs issued.
+     * Only rows this run inserted are touched (a reused target row keeps its own links). A pointer
+     * whose target is unknown to the run and absent from the target is set to NULL (if allowed).
      *
      * @param AdapterInterface $connection
      * @param array<int,array<string,mixed>> $deferred
      * @param array<string,array<string,mixed>> $idMap
-     * @return int
+     * @param array<string,string> $pkByTable
+     * @return array{updates:int,unlinked:int}
      */
-    private function applyDeferredReferences(AdapterInterface $connection, array $deferred, array $idMap): int
-    {
+    private function applyDeferredReferences(
+        AdapterInterface $connection,
+        array $deferred,
+        array $idMap,
+        array $pkByTable
+    ): array {
         $updates = 0;
+        $unlinked = 0;
         foreach ($deferred as $entry) {
-            $new = $idMap[$entry['ref_table']][(string)$entry['old_value']] ?? null;
-            if ($new === null || (string)$new === (string)$entry['old_value']) {
+            $old = (string)$entry['old_value'];
+            $new = $idMap[$entry['ref_table']][$old] ?? null;
+            if ($new === null) {
+                $pending = [$entry['ref_table'] => [$old => $entry['old_value']]];
+                if (!empty($entry['nullable'])
+                    && isset($this->findDangling($connection, $pending, $pkByTable)[$entry['ref_table']][$old])
+                ) {
+                    $new = null;
+                    $unlinked++;
+                } else {
+                    continue;
+                }
+            } elseif ((string)$new === $old) {
                 continue;
+            }
+            $bind = [$entry['column'] => $new];
+            if (($entry['updated_at'] ?? null) !== null) {
+                $bind[self::UPDATED_AT] = $entry['updated_at'];
             }
             $connection->update(
                 $entry['table'],
-                [$entry['column'] => $new],
+                $bind,
                 [$connection->quoteIdentifier($entry['pk']) . ' = ?' => $entry['target_pk']]
             );
             $updates++;
         }
-        return $updates;
+        return ['updates' => $updates, 'unlinked' => $unlinked];
     }
 
     /**
@@ -607,9 +745,24 @@ class Importer
     }
 
     /**
+     * IsTextColumn
+     *
+     * Whether a column (as described by the adapter) holds free text, i.e. '' is a legitimate value.
+     *
+     * @param array<string,mixed> $column
+     * @return bool
+     */
+    private function isTextColumn(array $column): bool
+    {
+        $type = strtolower((string)($column['DATA_TYPE'] ?? ''));
+        return str_contains($type, 'char') || str_contains($type, 'text') || str_contains($type, 'blob')
+            || in_array($type, ['enum', 'set', 'json'], true);
+    }
+
+    /**
      * StatusLabel
      *
-     * @param array{written:int,remapped:int,matched:int,skipped:int,cloned:bool} $stats
+     * @param array{written:int,remapped:int,matched:int,skipped:int,unlinked:int,cloned:bool} $stats
      * @return string
      */
     private function statusLabel(array $stats): string
@@ -618,6 +771,9 @@ class Importer
         if ($stats['written'] > 0) {
             $verb = !empty($stats['cloned']) ? 'cloned' : 'imported';
             $parts[] = $verb . ($stats['remapped'] > 0 ? " ({$stats['remapped']} new id)" : '');
+        }
+        if ($stats['unlinked'] > 0) {
+            $parts[] = "unlinked {$stats['unlinked']}";
         }
         if ($stats['matched'] > 0) {
             $parts[] = "matched {$stats['matched']}";
