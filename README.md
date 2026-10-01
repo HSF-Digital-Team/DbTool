@@ -1,219 +1,298 @@
 # EcomEU_DbTool
 
-Generic, **configuration-driven** export/import of a single customer's complete database footprint.
+Export / import **piloté par configuration** de l'empreinte complète d'un client en base de données.
 
-Rather than scattering customer-specific logic across the code, the module reads a **Customer Data
-Map** that declares which tables hold customer data, how each relates to the customer, and in what
-order to process them. The export/import engine simply interprets the map — adding new tables never
-requires touching the engine.
+Plutôt que de disperser de la logique « spéciale client » dans le code, le module lit une **carte des
+données client** (*Customer Data Map*) qui déclare quelles tables contiennent des données du client,
+comment chacune est reliée au client et dans quel ordre les traiter. Le moteur d'export / import ne
+fait qu'interpréter la carte : ajouter une table ne demande jamais de toucher au moteur.
 
-## Commands
+## Commandes
 
 ```bash
-# Export -> var/export/specialcustomer/<customer_id>/*.csv  (one CSV per table)
+# Export -> var/export/specialcustomer/<customer_id>/*.csv  (un CSV par table) + <customer_id>.zip
 bin/magento Tool:export:specialcustomer --customer_id=564321
 
 # Import <- var/import/specialcustomer/<customer_id>/*.csv
 bin/magento Tool:import:specialcustomer --customer_id=564321
 
-# Import as a brand-new customer with a FRESH entity_id (e.g. prod data into local dev)
+# Import en tant que NOUVEAU client, avec un entity_id neuf (ex. : données de prod dans un env local)
 bin/magento Tool:import:specialcustomer --customer_id=564321 --mode=clone
+
+# Répétition générale : tout l'import est exécuté puis annulé (rollback), rien n'est écrit
+bin/magento Tool:import:specialcustomer --customer_id=564321 --dry-run
 ```
 
-Every import prints the resulting customer(s) at the end (`Customer: id=… email=…` in restore mode;
-in clone mode the label is `New customer` and the per-run clone token follows), e.g.:
+`--customer_id` doit être un entier strictement positif (`0`, `-1`, `12abc` sont refusés avant tout
+accès à la base).
+
+Chaque import affiche à la fin le ou les clients obtenus (`Customer: id=… email=…` en mode
+*restore* ; en mode *clone* le libellé est `New customer` suivi du jeton de clonage), par exemple :
 
 ```
 New customer: id=812  email=jane@example.com
 Clone token: k3f9zq
 ```
 
-- Each table becomes its own CSV (`customer_entity.csv`, `quote.csv`, `sales_order_item.csv`, …),
-  human-readable and editable before import.
-- Export **overwrites** the customer's directory on each run and also writes a zip bundle of every
-  CSV at `var/export/specialcustomer/<id>.zip` for easy transfer. The zip needs PHP's `zip`
-  extension; without it the CSVs are still written and a warning is printed instead.
-- Import **remaps ids on collision**: if a primary key is already taken on the target it inserts a
-  new row with a fresh id and rewrites all foreign keys so the parent/child graph stays linked.
-  Move exported files into `var/import/specialcustomer/<id>/` to import.
-- Import is **one transaction**: a failure on any table rolls the whole run back, so a target DB is
-  never left with half a footprint.
-- A mapped table whose CSV is **missing** from the import directory is skipped and listed at the end
-  (`Skipped (no CSV present): …`); a header-only CSV imports zero rows. Both are harmless, so a
-  hand-trimmed import directory works.
-- A mapped table that **does not exist on the database** (a store-specific table such as
-  `contrat_aladin_clients` on another install) is skipped and listed, on export and on import.
-- Exporting a customer that **does not exist** (no table yields a row) fails with an error and
-  leaves no export directory behind.
-- SQL `NULL` is written to CSV as `\N` (MySQL's convention) so that `NULL` and the empty string
-  survive the round trip as distinct values. A plain empty cell stays an empty string for a text
-  column; for a typed column (int, decimal, datetime…) it is imported as `NULL`, so files written
-  before this convention remain importable.
-- The CSV dialect is plain RFC 4180 (comma, double quotes doubled, no escape character), written
-  and read by the module itself. Magento's own CSV helper is deliberately not used: it prefixes any
-  value starting with `=`, `+` or `-` with a space, which would corrupt phone numbers such as
-  `+33 6…` on the round trip.
-- Rows are imported **verbatim**: `customer_entity` keeps its `password_hash` / `rp_token`, orders
-  keep their `protect_code`, and so on. Attach a [processor](#custom-processors) to scrub anything
-  that must not land on the target.
+- Chaque table devient son propre CSV (`customer_entity.csv`, `quote.csv`, `sales_order_item.csv`, …),
+  lisible et modifiable à la main avant import.
+- L'export **écrase** le répertoire du client à chaque exécution, supprime le zip de l'exécution
+  précédente, puis écrit une archive `var/export/specialcustomer/<id>.zip` regroupant tous les CSV
+  pour faciliter le transfert. Le zip nécessite l'extension PHP `zip` ; sans elle les CSV sont tout
+  de même écrits et un avertissement est affiché.
+- Un export qui **échoue** (erreur SQL, client inexistant…) ne laisse rien derrière lui : le
+  répertoire partiel et l'ancien zip sont supprimés, pour qu'un export périmé ne passe jamais pour
+  un export à jour.
+- L'import **réattribue les identifiants en cas de collision** : si une clé primaire est déjà prise
+  sur la cible, la ligne est insérée avec un nouvel id et toutes les clés étrangères sont réécrites
+  pour que le graphe parent / enfant reste cohérent. Déposer les fichiers exportés dans
+  `var/import/specialcustomer/<id>/` pour importer.
+- L'import est **une seule transaction** : un échec sur n'importe quelle table annule toute
+  l'exécution, la base cible ne se retrouve jamais avec une demi-empreinte. Un échec d'insertion
+  est remonté avec la table et la clé de la ligne fautive (`cannot insert into sales_order
+  (entity_id = 123): …`), pour trouver la cause (index unique secondaire, clé étrangère vers une
+  table hors carte, colonne trop courte…) sans fouiller le SQL.
+- `--dry-run` déroule **tout** l'import (correspondances, insertions, réécritures de références)
+  dans la transaction puis l'annule au lieu de la valider. Le rapport est identique à un vrai
+  import (lignes écrites, réutilisées, abandonnées, colonnes ignorées, client résultant) ; la base
+  est inchangée. À utiliser avant tout import sur une base qui compte.
+- Une table de la carte dont le CSV **manque** dans le répertoire d'import est ignorée et listée à
+  la fin (`Skipped (no CSV present): …`) ; un CSV réduit à son en-tête importe zéro ligne. Les deux
+  cas sont inoffensifs : un répertoire d'import élagué à la main fonctionne.
+- Une **colonne d'un CSV absente de la table cible** (export depuis un schéma plus récent, colonne
+  ajoutée à la main, faute de frappe dans l'en-tête) est ignorée et **signalée** à la fin
+  (`customer_entity: column(s) not on this database ignored: …`), jamais passée sous silence.
+- Une table de la carte qui **n'existe pas en base** (table propre à une boutique, comme
+  `contrat_aladin_clients` sur une autre installation) est ignorée et listée, à l'export comme à
+  l'import.
+- Les **colonnes structurelles** de la carte (clé primaire, clé étrangère, colonne client, clé
+  naturelle) doivent exister sur la table cible ; sinon l'import échoue avant d'écrire quoi que ce
+  soit, en nommant la table, la colonne et le champ de la carte concerné.
+- Exporter un client **inexistant** (aucune table ne renvoie de ligne) échoue avec une erreur et ne
+  laisse aucun répertoire d'export.
+- Le `NULL` SQL est écrit dans le CSV comme `\N` (convention MySQL) afin que `NULL` et la chaîne
+  vide survivent à l'aller-retour comme deux valeurs distinctes. Une cellule vide reste une chaîne
+  vide pour une colonne texte ; pour une colonne typée (int, decimal, datetime…) elle est importée
+  en `NULL`, ce qui garde importables les fichiers écrits avant cette convention.
+- Le dialecte CSV est du RFC 4180 pur (virgule, guillemets doublés, pas de caractère d'échappement),
+  écrit et lu par le module lui-même. L'assistant CSV de Magento est volontairement écarté : il
+  préfixe d'un espace toute valeur commençant par `=`, `+` ou `-`, ce qui corromprait les numéros
+  de téléphone du type `+33 6…` à l'aller-retour.
+- Un CSV dont l'en-tête contient un **nom de colonne vide ou en double** est refusé : un tel
+  fichier rangerait des valeurs dans la mauvaise colonne.
+- Les lignes sont importées **telles quelles** : `customer_entity` garde son `password_hash` /
+  `rp_token`, les commandes gardent leur `protect_code`, etc. Attacher un
+  [processeur](#processeurs-personnalisés) pour nettoyer ce qui ne doit pas arriver sur la cible.
 
-### Import modes (`--mode`)
+### Modes d'import (`--mode`)
 
-- **`restore`** (default) — match & reuse existing rows: a customer already present (by
-  `email`+`website_id`), a product (by `sku`), an order (by `increment_id`+`store_id`) is reused, not
-  duplicated. Importing a footprint back into a DB that already has it therefore creates nothing.
-- **`clone`** — **force-create a brand-new customer** and their whole footprint (addresses, quotes,
-  orders + children) as fresh rows, leaving the existing customer untouched. This is the mode for
-  pulling prod data into a local dev env to reproduce a case. Shared catalog data is still reused:
-  products (`sku`) and customer group (`code`) are matched, not cloned.
-  - **The customer always gets a fresh `entity_id`** (and each order a fresh `entity_id`): the
-    exported primary key is dropped and the DB allocates a new auto-increment id, even on an empty
-    dev DB where the source id was free. All foreign keys (`customer_id`, `parent_id`, `order_id`,
-    quote/EAV/grid links) are remapped onto the new ids, so the graph stays linked.
-  - **Business keys are kept when free, regenerated only on collision.** The customer's real prod
-    `email` and each order's `increment_id` are imported as-is when the target doesn't already have
-    them; only if a value would violate the unique index is it rewritten (`email` →
-    `local+clone-<token>@domain`, `increment_id` → `<value>-<token>`), where `<token>` is a short
-    per-run id. So the first clone into a fresh dev DB keeps the real email; a second clone (the
-    email now exists) gets a suffixed one.
-  - **The resulting `customer_id` + `email` are printed at the end** so you can find the copy. Clone
-    mode is **non-idempotent** — each run produces another distinct customer.
+- **`restore`** (défaut) — faire correspondre et réutiliser les lignes existantes : un client déjà
+  présent (par `email` + `website_id`), un produit (par `sku`), une commande (par `increment_id` +
+  `store_id`) est réutilisé, pas dupliqué. Réimporter une empreinte dans une base qui l'a déjà ne
+  crée donc rien.
+- **`clone`** — **forcer la création d'un client tout neuf** et de toute son empreinte (adresses,
+  paniers, commandes + enfants) sous forme de nouvelles lignes, sans toucher au client existant.
+  C'est le mode pour rapatrier des données de prod dans un environnement de dev afin de reproduire
+  un cas. Les données de catalogue partagées restent réutilisées : produits (`sku`) et groupe client
+  (`code`) sont mis en correspondance, pas clonés.
+  - **Le client reçoit toujours un `entity_id` neuf** (et chaque commande un `entity_id` neuf) : la
+    clé primaire exportée est abandonnée et la base alloue un nouvel auto-incrément, même sur une
+    base de dev vide où l'id source était libre. Toutes les clés étrangères (`customer_id`,
+    `parent_id`, `order_id`, liens panier / EAV / grille) sont réécrites vers les nouveaux ids, le
+    graphe reste cohérent.
+  - **Les clés métier sont conservées si libres, régénérées seulement en cas de collision.**
+    L'`email` réel de prod du client et l'`increment_id` de chaque commande sont importés tels quels
+    quand la cible ne les a pas déjà ; seule une valeur qui violerait l'index unique est réécrite
+    (`email` → `local+clone-<token>@domaine`, `increment_id` → `<valeur>-<token>`), `<token>` étant
+    un court identifiant propre à l'exécution. Le premier clone dans une base de dev vierge garde
+    donc l'email réel ; un second clone (l'email existe désormais) reçoit un email suffixé.
+  - **Le `customer_id` et l'`email` obtenus sont affichés à la fin** pour retrouver la copie. Le
+    mode clone est **non idempotent** : chaque exécution produit un client distinct de plus.
 
-  Which tables are cloned vs reused is config-driven: `clone_new` (skip the reuse match, always
-  insert) is set on `customer_entity` and `sales_order`; `clone_regenerate` (column → strategy) makes
-  their unique keys unique; `clone_mirror` (column → strategy) makes every denormalised copy of the
-  value (`customer_grid_flat.email`, `quote.customer_email`, `sales_order.customer_email`,
-  `sales_order_grid.increment_id`/`customer_email`, `quote_address.email`, `sales_order_address.email`)
-  follow whatever the deciding table kept or regenerated. See those fields in the map table below.
+  Quelles tables sont clonées ou réutilisées est piloté par la carte : `clone_new` (ignorer la
+  correspondance, toujours insérer) est posé sur `customer_entity` et `sales_order` ;
+  `clone_regenerate` (colonne → stratégie) rend leurs clés uniques effectivement uniques ;
+  `clone_mirror` (colonne → stratégie) fait suivre à chaque copie dénormalisée de la valeur
+  (`customer_grid_flat.email`, `quote.customer_email`, `sales_order.customer_email`,
+  `sales_order_grid.increment_id` / `customer_email`, `quote_address.email`,
+  `sales_order_address.email`) ce que la table décisionnaire a gardé ou régénéré. Voir ces champs
+  dans le tableau de la carte ci-dessous.
 
-## The Customer Data Map
+## La carte des données client
 
-The default map lives in `Model/Config/CustomerMap.php`. Each entry describes one table:
+La carte par défaut vit dans `Model/Config/CustomerMap.php`. Chaque entrée décrit une table :
 
-| Field                | Required            | Meaning |
-|----------------------|---------------------|---------|
-| `table`              | yes                 | Table name (no DB prefix). |
-| `primary_key`        | no (`entity_id`)    | Primary key column. |
-| `relationship_type`  | yes                 | `direct`, `child` or `lookup`. |
-| `customer_column`    | for `direct`        | Column equal to the customer id (`entity_id` on `customer_entity`, `customer_id` on `quote`/`sales_order`). |
-| `parent`             | for `child`         | Parent table name. |
-| `parent_key`         | for `child`         | Column in the parent whose values this table references (usually the parent PK). |
-| `foreign_key`        | for `child`         | Column in this table pointing at `parent.parent_key`. |
-| `lookup_sources`     | for `lookup`        | `[{table, column}, …]` — gather this table's ids from those columns of already-exported tables. |
-| `export_priority`    | no (`0`)            | Ascending order; parents must precede children. |
-| `import_priority`    | no (= export)       | Ascending order; parents must precede children (FK safety). |
-| `references`         | no                  | FK columns to remap on import: `[{column, table}, …]` where `table` is another mapped table. The child→parent link is auto-derived; declare only cross-links. A reference to a table that imports **later** (e.g. `customer_entity.default_billing` → `customer_address_entity`) is rewritten by `UPDATE` at the end of the run. |
-| `unique_key`         | no                  | Natural key columns (e.g. `[email, website_id]`, `[sku]`). A matching target row is reused instead of inserted. |
-| `skip_if_parent_reused` | no               | Child rows are skipped on import when their parent matched an existing target row (product sub-data, customer grid). |
-| `clone_new`          | no                  | `--mode=clone` only: skip the `unique_key` reuse match and always insert a fresh row (force-create). Set on `customer_entity`, `sales_order`. |
-| `clone_regenerate`   | no                  | `--mode=clone` only, on a `clone_new` table: `column => strategy` map rewriting unique business keys before insert (only on collision). Strategies: `email_suffix`, `suffix`. |
-| `clone_mirror`       | no                  | `--mode=clone` only: `column => strategy` map for columns holding a *copy* of a value regenerated elsewhere under that strategy (e.g. `quote.customer_email` mirrors `customer_entity.email`). |
-| `filter`             | no                  | Extra WHERE conditions, `['column op ?' => value]`, bound safely. |
-| `processor`          | no                  | FQCN implementing `EcomEU\DbTool\Api\TableProcessorInterface` for special handling. |
+| Champ                   | Obligatoire          | Signification |
+|-------------------------|----------------------|---------------|
+| `table`                 | oui                  | Nom de la table (sans préfixe de base). |
+| `primary_key`           | non (`entity_id`)    | Colonne de clé primaire. |
+| `relationship_type`     | oui                  | `direct`, `child` ou `lookup`. |
+| `customer_column`       | pour `direct`        | Colonne égale à l'id client (`entity_id` sur `customer_entity`, `customer_id` sur `quote` / `sales_order`). |
+| `parent`                | pour `child`         | Nom de la table parente (jamais la table elle-même : un auto-lien se déclare dans `references`). |
+| `parent_key`            | pour `child`         | Colonne du parent dont cette table référence les valeurs (en général la PK du parent). |
+| `foreign_key`           | pour `child`         | Colonne de cette table pointant sur `parent.parent_key`. |
+| `lookup_sources`        | pour `lookup`        | `[{table, column}, …]` — rassembler les ids de cette table depuis ces colonnes de tables déjà exportées. Une source peut ajouter `eav_attribute: '<entity_type_code>/<attribute_code>'` pour ne prendre la colonne que sur les lignes de cet attribut EAV (ex. : `catalog_product_entity_varchar.value` de `family_set`). |
+| `lookup_column`         | non (`primary_key`)  | Pour `lookup` : la colonne comparée aux valeurs rassemblées, quand la table est indexée par une valeur métier plutôt qu'un id (ex. : `familyset_code`). |
+| `requires`              | non                  | Lignes d'une table **hors carte** dont dépendent les lignes de cette table : `[{column, table, key}, …]` (ex. : `catalog_category_product.category_id` → `catalog_category_entity.entity_id`). À l'import, une ligne dont la ligne requise n'existe pas sur la cible est abandonnée (ou la colonne mise à `NULL` si elle l'accepte) au lieu d'échouer sur la clé étrangère. Une table de la carte ne peut pas être « requise » : elle se déclare dans `references`. |
+| `export_priority`       | non (`0`)            | Ordre croissant ; les parents doivent précéder les enfants. |
+| `import_priority`       | non (= export)       | Ordre croissant ; les parents doivent précéder les enfants (sécurité des FK). |
+| `references`            | non                  | Colonnes FK à réécrire à l'import : `[{column, table}, …]` où `table` est une autre table de la carte. Le lien enfant → parent est dérivé automatiquement ; ne déclarer que les liens croisés. Une référence vers une table importée **plus tard** (ex. : `customer_entity.default_billing` → `customer_address_entity`) est réécrite par `UPDATE` à la fin de l'exécution. |
+| `unique_key`            | non                  | Colonnes de clé naturelle (ex. : `[email, website_id]`, `[sku]`). Une ligne cible correspondante est réutilisée au lieu d'être insérée. |
+| `skip_if_parent_reused` | non                  | Les lignes enfants sont ignorées à l'import quand leur parent a été mis en correspondance avec une ligne cible existante (sous-données produit, grille client). |
+| `clone_new`             | non                  | `--mode=clone` seulement : ignorer la correspondance `unique_key` et toujours insérer une nouvelle ligne (création forcée). Posé sur `customer_entity`, `sales_order`. |
+| `clone_regenerate`      | non                  | `--mode=clone` seulement, sur une table `clone_new` : carte `colonne => stratégie` réécrivant les clés métier uniques avant insertion (seulement en cas de collision). Stratégies : `email_suffix`, `suffix`. |
+| `clone_mirror`          | non                  | `--mode=clone` seulement : carte `colonne => stratégie` pour les colonnes portant une *copie* d'une valeur régénérée ailleurs sous cette stratégie (ex. : `quote.customer_email` reflète `customer_entity.email`). |
+| `filter`                | non                  | Conditions WHERE supplémentaires, `['colonne op ?' => valeur]`, liées de façon sûre. |
+| `processor`             | non                  | FQCN implémentant `EcomEU\DbTool\Api\TableProcessorInterface` pour un traitement spécial. La classe doit exister, sinon l'exécution échoue avant tout accès à la base. |
 
-### How relationships are resolved (export)
+Chaque champ est vérifié au chargement : un type inattendu (une chaîne là où un tableau est
+attendu, une clé primaire vide, une entrée de `references` / `lookup_sources` / `requires`
+incomplète, une stratégie de clonage inconnue…) fait échouer la commande immédiatement avec le nom
+de la table et du champ, jamais au milieu d'un export ou d'un import.
+
+### Résolution des relations (export)
 
 - **direct** → `WHERE <customer_column> = :customer_id`
-- **child**  → `WHERE <foreign_key> IN (<parent_key values collected while exporting the parent>)`
-- **lookup** → `WHERE <primary_key> IN (<values collected from the lookup_sources columns>)`
+- **child**  → `WHERE <foreign_key> IN (<valeurs de parent_key collectées en exportant le parent>)`
+- **lookup** → `WHERE <lookup_column> IN (<valeurs collectées depuis les colonnes lookup_sources>)`
 
-Because tables are processed in priority order, a parent's key values are always collected before
-its children are queried. A child (or lookup) that resolves to no ids yields a header-only CSV.
+Les tables étant traitées par ordre de priorité, les valeurs de clé d'un parent sont toujours
+collectées avant que ses enfants soient interrogés. Un enfant (ou lookup) qui ne résout aucun id
+produit un CSV réduit à son en-tête.
 
-The merged map is validated at load time: no table may be mapped twice, every `parent`,
-`references[].table` and `lookup_sources[].table` must name a mapped table, a child must have a higher
-`export_priority` **and** `import_priority` than its parent, and a lookup table must export after all
-of its sources. A bad entry (including one injected from `di.xml`) fails fast with a descriptive
-error.
+Une liste `IN (...)` est **découpée par tranches de 5 000 valeurs** (une requête par tranche, les
+résultats sont concaténés) ; une grosse empreinte (des milliers de produits, des centaines de
+milliers de lignes EAV) ne produit donc jamais une requête démesurée qui dépasserait
+`max_allowed_packet`. Les vérifications d'existence de l'import (ids déjà pris, liens pendants)
+sont découpées de la même manière.
 
-### Import: id remapping & foreign-key preservation
+La carte fusionnée est validée au chargement : aucune table ne peut être cartographiée deux fois,
+chaque `parent`, `references[].table` et `lookup_sources[].table` doit nommer une table de la
+carte, une table ne peut pas être son propre parent, un `requires` ne peut pas viser une table de
+la carte, un enfant doit avoir un `export_priority` **et** un `import_priority` supérieurs à ceux de
+son parent, et une table lookup doit s'exporter après toutes ses sources. Une entrée invalide (y
+compris injectée depuis `di.xml`) échoue immédiatement avec une erreur explicite.
 
-Tables import in `import_priority` order (parents first). The engine keeps an id map (old id → id on
-the target) per table and rewrites the `references` of later tables from it, so links survive even
-when ids change. Per row:
+### Import : réattribution des ids et préservation des clés étrangères
 
-1. If `unique_key` is set and a target row matches → **reuse** its id (no insert).
-2. Else if the primary key is free on the target → insert keeping the original id.
-3. Else (collision) → insert with the id omitted and capture the new auto-increment id.
+Les tables s'importent dans l'ordre d'`import_priority` (parents d'abord). Le moteur tient une
+carte d'ids (ancien id → id sur la cible) par table et réécrit les `references` des tables
+suivantes à partir d'elle, pour que les liens survivent même quand les ids changent. Par ligne :
 
-A row skipped because its parent was reused (`skip_if_parent_reused`) is dropped together with **its
-own** children (cascade), so a skipped address never leaves orphan `customer_address_entity_*` rows.
+1. Si `unique_key` est défini et qu'une ligne cible correspond → **réutiliser** son id (pas
+   d'insertion).
+2. Sinon, si la clé primaire est libre sur la cible → insérer en gardant l'id d'origine.
+3. Sinon (collision) → insérer sans l'id et capturer le nouvel auto-incrément.
 
-References that point *back* at a table imported later (`customer_entity.default_billing` /
-`default_shipping` → addresses, `sales_order.billing_address_id` / `shipping_address_id` → order
-addresses) are remembered per inserted row and applied as `UPDATE`s after the last table, once the
-target ids are known. That `UPDATE` re-asserts the exported `updated_at`, so MySQL's
-`ON UPDATE CURRENT_TIMESTAMP` does not silently bump it. Rows reused from the target keep their own
-links.
+Seule une clé auto-incrémentée peut être allouée par la base : pour une table dont la clé primaire
+ne l'est pas (grilles, clés composées), la valeur exportée *est* l'id, et une ligne qui n'en
+porte pas ne crée aucune entrée dans la carte d'ids (elle n'est jamais confondue avec le dernier id
+alloué sur la connexion).
 
-**Dangling links are nulled.** A cross-link whose target row is unknown to the run (not in the
-export, e.g. the quote an order came from was purged; or skipped because its parent was reused, e.g.
-the address book entry behind `quote_address.customer_address_id` when the customer already existed)
-is looked up on the target: if that id exists there it is kept (on a same-DB restore it is the right
-row), otherwise the column is set to `NULL` when nullable, instead of pointing at whatever row owns
-that id on the other database. The run reports how many links were nulled. The structural links are
-never touched: a child's link to its parent and a direct table's `customer_column` must resolve, or
-the run fails on the foreign key.
+Une ligne ignorée parce que son parent a été réutilisé (`skip_if_parent_reused`) est abandonnée
+avec **ses propres** enfants (cascade), une adresse ignorée ne laisse donc jamais de lignes
+`customer_address_entity_*` orphelines.
 
-**Products** (`catalog_product_entity`, a `lookup` from the item `product_id`s) export *after* the
-items but import *before* them (priorities 70/71 vs 5/6), so `sales_order_item.product_id` /
-`quote_item.product_id` are remapped to the target product matched by `sku`. Product sub-tables
-(EAV/website/stock) are `skip_if_parent_reused`, so existing products aren't touched; only a
-stub-inserted (missing-sku) product receives them.
+Les références qui pointent *en arrière* vers une table importée plus tard
+(`customer_entity.default_billing` / `default_shipping` → adresses, `sales_order.billing_address_id`
+/ `shipping_address_id` → adresses de commande) sont mémorisées par ligne insérée et appliquées en
+`UPDATE` après la dernière table, une fois les ids cibles connus. Cet `UPDATE` réaffirme l'`updated_at`
+exporté, pour que `ON UPDATE CURRENT_TIMESTAMP` de MySQL ne le modifie pas en douce. Les lignes
+réutilisées depuis la cible gardent leurs propres liens.
 
-> **Cross-DB product caveat:** matching an existing product by `sku` and remapping is reliable. For a
-> *missing* sku the exported product rows are inserted best-effort, but product EAV `attribute_id`s
-> can differ between databases, so a stub product may be imperfect. For full product parity across
-> environments use `scripts/db-sync-gui/`.
+**Les liens pendants sont mis à `NULL`.** Un lien croisé dont la ligne cible est inconnue de
+l'exécution (absente de l'export, ex. : le panier d'origine d'une commande a été purgé ; ou ignorée
+parce que son parent a été réutilisé, ex. : l'entrée du carnet d'adresses derrière
+`quote_address.customer_address_id` quand le client existait déjà) est recherché sur la cible : si
+cet id y existe il est conservé (sur une restauration dans la même base c'est la bonne ligne) ;
+sinon la colonne est mise à `NULL` si elle l'accepte, et si elle ne l'accepte pas la ligne est
+**abandonnée** avec ses propres enfants (un lien produit vers un produit qui n'existe nulle part sur
+la cible, un placement de catégorie dont la catégorie manque). L'exécution indique combien de liens
+ont été annulés et combien de lignes abandonnées. Les liens structurels ne sont jamais touchés : le
+lien d'un enfant vers son parent et la `customer_column` d'une table directe doivent se résoudre,
+sinon l'exécution échoue sur la clé étrangère.
 
-> **Idempotency note:** because a taken id triggers a new-id insert, re-importing into the **same**
-> DB duplicates entities that have no `unique_key` (quotes). The intended target is a
-> *different* DB. Customers (`email`), their addresses (skipped when the customer is reused),
-> orders (`increment_id`+`store_id`) and products (`sku`) are matched and never duplicated.
+**Les produits** (`catalog_product_entity`, un `lookup` depuis les `product_id` des lignes) sont
+exportés *après* les lignes mais importés *avant* elles (priorités 70/71 contre 5/6), de sorte que
+`sales_order_item.product_id` / `quote_item.product_id` sont réécrits vers le produit cible
+correspondant par `sku`. Les sous-tables produit (EAV / site / stock) sont `skip_if_parent_reused`,
+les produits existants ne sont donc pas touchés ; seul un produit inséré comme ébauche (sku
+manquant) les reçoit.
 
-> **Secondary unique keys:** the engine remaps the primary key but inserts other columns intact, so a
-> *secondary* unique index could otherwise collide. The known case, `sales_order`, is handled: it has
-> `unique_key => ['increment_id', 'store_id']`, so an order already present on the target (same order
-> number) is **matched and reused** instead of re-inserted, and its children
-> (`sales_order_address`/`_item`/`_payment`/`_grid`) are `skip_if_parent_reused`. This makes order
-> import idempotent and avoids the `SALES_ORDER_INCREMENT_ID_STORE_ID` (1062) error.
+> **Réserve sur les produits entre bases :** faire correspondre un produit existant par `sku` et
+> réécrire est fiable. Pour un sku *manquant*, les lignes produit exportées sont insérées au mieux,
+> mais les `attribute_id` EAV produit peuvent différer d'une base à l'autre, une ébauche de produit
+> peut donc être imparfaite. Pour une parité produit complète entre environnements, utiliser
+> `scripts/db-sync-gui/`.
+
+> **Note d'idempotence :** clients (`email`), commandes et leurs documents (`increment_id` +
+> `store_id`), produits (`sku`), groupes (`code`) et prix family-set sont mis en correspondance et
+> jamais dupliqués. Les lignes sans clé naturelle (adresses, paniers, messages cadeaux, valeurs EAV,
+> grilles) pendent à un parent mis en correspondance et sont ignorées quand il a été réutilisé ;
+> réimporter une empreinte déjà présente ne crée donc rien.
+
+> **Clés uniques secondaires :** le moteur réattribue la clé primaire mais insère les autres
+> colonnes telles quelles, un index unique *secondaire* pourrait donc entrer en collision. Le cas
+> connu, `sales_order`, est traité : il a `unique_key => ['increment_id', 'store_id']`, une commande
+> déjà présente sur la cible (même numéro) est donc **mise en correspondance et réutilisée** au lieu
+> d'être réinsérée, et ses enfants (`sales_order_address` / `_item` / `_payment` / `_grid`) sont
+> `skip_if_parent_reused`. L'import de commandes est ainsi idempotent et évite l'erreur
+> `SALES_ORDER_INCREMENT_ID_STORE_ID` (1062).
 >
-> Matching is by `(increment_id, store_id)`: if two *different* databases reuse the same order-number
-> sequence for different orders, an incoming order could match an unrelated target order and be
-> skipped — inherent to using the order number as identity; the intended target is a restore/copy or a
-> DB that doesn't already hold this customer's orders. If a *new* table hits the same class of problem,
-> give it a `unique_key` (to match/reuse) the same way. Note `quote` has no natural key, so re-importing
-> into the source DB still duplicates carts (a limitation, not a crash).
+> La correspondance se fait sur `(increment_id, store_id)` : si deux bases *différentes* réutilisent
+> la même séquence de numéros pour des commandes différentes, une commande entrante peut
+> correspondre à une commande cible sans rapport et être ignorée — inhérent à l'usage du numéro de
+> commande comme identité ; la cible visée est une restauration / copie ou une base qui ne contient
+> pas déjà les commandes de ce client. Si une *nouvelle* table rencontre la même classe de problème,
+> lui donner une `unique_key` (pour correspondre / réutiliser) de la même façon, ou en faire un
+> `child` d'un parent mis en correspondance avec `skip_if_parent_reused` (comme les paniers pendent
+> au client).
 
-> **Tables with no surrogate primary key:** some tables identify a row by a business column rather than
-> an auto-increment id (e.g. `contrat_aladin_clients`, whose identity is the unique `int`
-> `contrat_client`, with no PK/auto-increment at all). For these, set **both** `primary_key` and
-> `unique_key` to that business key — `primary_key => 'contrat_client'`, `unique_key => ['contrat_client']`.
-> `primary_key` must name a real column (the engine's match query selects it; the `entity_id` default
-> would error), and `unique_key` makes an existing row matched & reused rather than re-inserted (which
-> would hit its 1062). In `--mode=clone` such a row is matched (not cloned) — its unique index is on
-> `contrat_client` alone, so it must **not** be `clone_new`; minting a new business id (and any
-> dependent rows) is out of scope. Its `contract_code` / `contrat_client_type_id` reference
-> `contrat_aladin`, which is outside the map and must already exist on the target.
+> **Tables sans clé primaire de substitution :** certaines tables identifient une ligne par une
+> colonne métier plutôt qu'un auto-incrément (ex. : `contrat_aladin_clients`, dont l'identité est
+> l'`int` unique `contrat_client`, sans PK ni auto-incrément). Pour celles-ci, poser **à la fois**
+> `primary_key` et `unique_key` sur cette clé métier — `primary_key => 'contrat_client'`,
+> `unique_key => ['contrat_client']`. `primary_key` doit nommer une vraie colonne (la requête de
+> correspondance la sélectionne ; le défaut `entity_id` est désormais refusé avant tout écriture) et
+> `unique_key` fait qu'une ligne existante est réutilisée plutôt que réinsérée (ce qui provoquerait
+> son 1062). En `--mode=clone` une telle ligne est mise en correspondance (pas clonée) — son index
+> unique porte sur `contrat_client` seul, elle ne doit donc **pas** être `clone_new` ; forger un
+> nouvel id métier (et les lignes dépendantes) est hors périmètre. Ses `contract_code` /
+> `contrat_client_type_id` référencent `contrat_aladin`, hors carte, qui doit déjà exister sur la
+> cible.
 
 ## Tests
 
-`Test/Integration/` holds PHPUnit tests that run the real engine against the database of the Magento
-install the module is deployed in. Each test builds a complete customer footprint (customer, address,
-product, cart with parent/child lines and an option, order with addresses, lines and payment) inside
-a transaction that is rolled back afterwards, so nothing is left behind. Covered: the export writes
-one CSV per mapped table with the right rows and the delicate values intact; import onto the same
-account (reused, nothing duplicated), onto taken ids (fresh ids, every link rewritten), onto a free
-account (ids kept), and clone mode. From the Magento root:
+Deux suites :
 
-```bash
-vendor/bin/phpunit -c app/code/EcomEU/DbTool/Test/Integration/phpunit.xml
-```
+- **Unitaires** (`Test/Unit/`, exécutés en CI) : PHP pur, sans Magento ni base. Ils couvrent la
+  validation d'une entrée de carte, la cohérence de la carte fusionnée (y compris la carte par
+  défaut livrée et les surcharges `di.xml`) et le dialecte CSV (aller-retour des valeurs délicates,
+  fichiers édités à la main, en-têtes refusés). Depuis la racine du module :
 
-## Extending the map from another module
+  ```bash
+  composer install
+  vendor/bin/phpunit
+  ```
 
-Add tables without editing this module by injecting into `MapProvider` from your own `etc/di.xml`.
-An entry with the same array key as a default **replaces** that default.
+- **Intégration** (`Test/Integration/`) : le vrai moteur contre la base de l'installation Magento où
+  le module est déployé. Chaque test construit une empreinte client complète (client, adresse,
+  produit, panier avec lignes parent / enfant et option, commande avec adresses, lignes, paiement,
+  facture, expédition, …) dans une transaction annulée ensuite, rien n'est laissé derrière.
+  Couvert : l'export écrit un CSV par table avec les bonnes lignes et les valeurs délicates intactes,
+  et supprime le zip périmé ; l'import sur le même compte (réutilisé, rien dupliqué), sur des ids
+  pris (ids neufs, chaque lien réécrit), sur un compte libre (ids conservés), le mode clone, le
+  `--dry-run` (rapport complet, base inchangée) et la colonne inconnue signalée. Depuis la racine
+  Magento, le module devant être activé :
+
+  ```bash
+  vendor/bin/phpunit -c app/code/EcomEU/DbTool/Test/Integration/phpunit.xml
+  ```
+
+## Étendre la carte depuis un autre module
+
+Ajouter des tables sans modifier ce module en injectant dans `MapProvider` depuis votre propre
+`etc/di.xml`. Une entrée portant la même clé de tableau qu'une entrée par défaut **la remplace**.
 
 ```xml
 <type name="EcomEU\DbTool\Model\MapProvider">
@@ -234,94 +313,114 @@ An entry with the same array key as a default **replaces** that default.
 </type>
 ```
 
-## Custom processors
+## Processeurs personnalisés
 
-For handling that can't be expressed declaratively (scrubbing password hashes, dropping generated
-columns, remapping values), implement `EcomEU\DbTool\Api\TableProcessorInterface` and reference it by
-FQCN in the entry's `processor` field. The engine calls `processExportRows()` / `processImportRows()`
-around that table's rows.
+Pour un traitement qui ne s'exprime pas de façon déclarative (nettoyer des hachages de mot de passe,
+retirer des colonnes générées, remapper des valeurs), implémenter
+`EcomEU\DbTool\Api\TableProcessorInterface` et la référencer par FQCN dans le champ `processor` de
+l'entrée. Le moteur appelle `processExportRows()` / `processImportRows()` autour des lignes de cette
+table. Un processeur doit renvoyer des valeurs scalaires (ou `null`) : une valeur imbriquée
+(tableau, objet) est refusée à l'écriture du CSV avec la table, la ligne et la colonne nommées.
 
-## Notes & assumptions
+## Notes et hypothèses
 
-- No schema changes: the module only reads/writes existing tables.
-- **Customer & address EAV attribute data is captured.** `customer_entity` and
-  `customer_address_entity` are EAV entities, so their custom attributes live in the value tables
-  `customer_entity_{datetime,decimal,int,text,varchar}` and `customer_address_entity_{…}`. These are
-  seeded as `child` entries (FK `entity_id`). Customer value tables and addresses are
-  `skip_if_parent_reused` — when a customer is matched by email on the target, its attribute rows and
-  addresses already exist there and are left untouched (address value rows follow by cascade); only a
-  newly-inserted customer receives them.
-- **Requires PHP 8.3+** (typed class constants). CI runs PHPCS and PHPStan on 8.4.
-- **Customer group is synced.** `customer_group` is a `lookup` gathered from the group ids referenced
-  by the customer/quotes/orders. On import it is **matched by `customer_group_code`** to reuse the
-  target's group id (standard groups always match; a custom group inserts with a fresh id), and
-  `customer_entity.group_id` / `quote`.`customer_group_id` / `sales_order`.`customer_group_id` /
-  `catalog_product_entity_tier_price`.`customer_group_id` are remapped to it. It exports last (after
-  the tier prices) but imports first — the split-priority pattern.
-- **Product tier prices are synced.** `catalog_product_entity_tier_price` is a product `child`
-  (`skip_if_parent_reused`), so existing products keep their tier prices and only a stub-inserted
-  (missing-sku) product receives them; `customer_group_id` on each row is remapped to the matched
-  group. `website_id` is **not** remapped — like `store_id`, `store_website` is a referenced global
-  table that must already align on the target.
-- **The product EAV value set is complete and store-scoped.** All six backends are captured —
-  `catalog_product_entity_{datetime,decimal,int,text,varchar,gallery}`. These tables are keyed by
-  `store_id`, and the export applies **no store filter** (it pulls every row for the product id), so
-  **per-store attribute and price overrides** (e.g. a store-specific `special_price` in
-  `catalog_product_entity_decimal`) all come across as separate rows automatically.
-- **Configurable/bundle cart lines keep their selection.** A configurable/bundle cart line is a
-  parent + child `quote_item` pair (linked by `parent_item_id`, a self-reference the engine remaps),
-  and the chosen options live in `quote_item_option` (info_buyRequest / attributes / simple_product /
-  bundle & custom-option values) — both are synced. (Order lines likewise keep their `parent_item_id`
-  self-link and their `quote_item_id` link to the remapped cart line; their options stay inline on
-  `sales_order_item.product_options`.) **Caveat:** those option payloads are *serialized* and embed
-  product/attribute ids that are **not** rewritten. This is fine for same-DB restore/clone (products
-  are matched by `sku` to the same rows, so the embedded ids stay valid); on a *cross-DB* import where
-  a sku has a different `product_id`, an embedded selection can be stale.
-- Import expects referenced rows in tables **outside** the map (store, website, tax class, …) to
-  already exist in the target DB.
+- Aucun changement de schéma : le module ne fait que lire / écrire des tables existantes.
+- **Les attributs EAV client et adresse sont capturés.** `customer_entity` et
+  `customer_address_entity` sont des entités EAV, leurs attributs personnalisés vivent dans les
+  tables de valeurs `customer_entity_{datetime,decimal,int,text,varchar}` et
+  `customer_address_entity_{…}`. Elles sont déclarées comme entrées `child` (FK `entity_id`). Les
+  tables de valeurs client et les adresses sont `skip_if_parent_reused` — quand un client est mis
+  en correspondance par email sur la cible, ses lignes d'attributs et ses adresses y existent déjà et
+  sont laissées intactes (les lignes de valeurs d'adresse suivent par cascade) ; seul un client
+  nouvellement inséré les reçoit.
+- **PHP 8.3+ requis** (constantes de classe typées). La CI exécute PHPCS, PHPStan et les tests
+  unitaires sur 8.4.
+- **Le groupe client est synchronisé.** `customer_group` est un `lookup` rassemblé depuis les ids de
+  groupe référencés par le client / paniers / commandes. À l'import il est **mis en correspondance
+  par `customer_group_code`** pour réutiliser l'id de groupe de la cible (les groupes standard
+  correspondent toujours ; un groupe personnalisé s'insère avec un id neuf), et
+  `customer_entity.group_id` / `quote.customer_group_id` / `sales_order.customer_group_id` /
+  `catalog_product_entity_tier_price.customer_group_id` sont réécrits vers lui. Il s'exporte en
+  dernier (après les prix dégressifs) mais s'importe en premier — le motif « priorités séparées ».
+- **Les prix dégressifs produit sont synchronisés.** `catalog_product_entity_tier_price` est un
+  `child` du produit (`skip_if_parent_reused`), les produits existants gardent donc leurs prix et
+  seul un produit inséré comme ébauche (sku manquant) les reçoit ; `customer_group_id` sur chaque
+  ligne est réécrit vers le groupe correspondant. `website_id` n'est **pas** réécrit — comme
+  `store_id`, `store_website` est une table globale référencée qui doit déjà coïncider sur la cible.
+- **Le jeu de valeurs EAV produit est complet et par magasin.** Les six backends sont capturés —
+  `catalog_product_entity_{datetime,decimal,int,text,varchar,gallery}`. Ces tables sont indexées par
+  `store_id` et l'export n'applique **aucun filtre de magasin** (il prend toutes les lignes de l'id
+  produit), donc **les surcharges d'attributs et de prix par magasin** (ex. : un `special_price`
+  propre à un magasin dans `catalog_product_entity_decimal`) arrivent toutes comme des lignes
+  séparées, automatiquement.
+- **Les lignes de panier configurable / bundle gardent leur sélection.** Une ligne configurable /
+  bundle est une paire `quote_item` parent + enfant (liée par `parent_item_id`, une auto-référence
+  que le moteur réécrit), et les options choisies vivent dans `quote_item_option`
+  (info_buyRequest / attributes / simple_product / valeurs bundle et options personnalisées) — les
+  deux sont synchronisés. (Les lignes de commande gardent de même leur auto-lien `parent_item_id` et
+  leur lien `quote_item_id` vers la ligne de panier réécrite ; leurs options restent en ligne dans
+  `sales_order_item.product_options`.) **Réserve :** ces charges utiles d'options sont *sérialisées*
+  et embarquent des ids de produit / attribut qui ne sont **pas** réécrits. C'est sans conséquence
+  pour une restauration / un clone dans la même base (les produits sont mis en correspondance par
+  `sku` vers les mêmes lignes, les ids embarqués restent valides) ; sur un import *entre bases* où
+  un sku a un `product_id` différent, une sélection embarquée peut être périmée.
+- L'import suppose que les lignes référencées dans les tables **hors carte** (magasin, site, classe
+  de taxe, …) existent déjà dans la base cible.
 
-### Known limitations
+### Limites connues
 
-- **Restore never updates an existing row.** A customer already on the target is matched and left
-  as-is: new addresses, changed attributes or a new default address on the source are **not**
-  applied, and their orders placed since are imported but linked to no address book entry. To refresh
-  a customer that already exists locally, use `--mode=clone` (a complete fresh copy) or delete the
-  local customer first.
-- **Real order numbers are imported.** The target's `sequence_order_<store>` counter is not advanced,
-  so an order placed later on the target can eventually reach an imported `increment_id` and fail on
-  the unique index. Irrelevant for a throw-away dev DB; bump the sequence if the target keeps taking
-  orders.
-- **Memory is proportional to the largest table.** Each table is read and written as one array
-  (roughly 1 KB per row). The product EAV tables dominate: a customer with 2 000 distinct products
-  pulls ~700 000 rows, which exported in ~11 s under a 10 GB CLI memory limit; keep that in mind on a
-  tight `memory_limit`.
-- **Stub products have no MSI stock.** `inventory_source_item` (keyed by `sku`) is not mapped, so a
-  product inserted because its `sku` was missing has no source item; existing products are unaffected.
+- **Une restauration ne met jamais à jour une ligne existante.** Un client déjà sur la cible est mis
+  en correspondance et laissé tel quel : de nouvelles adresses, un panier plus récent, des attributs
+  modifiés ou une nouvelle adresse par défaut côté source ne sont **pas** appliqués, et ses commandes
+  passées depuis sont importées mais liées à aucune entrée du carnet d'adresses. Pour rafraîchir un
+  client qui existe déjà localement, utiliser `--mode=clone` (copie neuve complète) ou supprimer
+  d'abord le client local.
+- **Les vrais numéros de commande sont importés.** Le compteur `sequence_order_<store>` de la cible
+  n'est pas avancé, une commande passée plus tard sur la cible peut donc finir par atteindre un
+  `increment_id` importé et échouer sur l'index unique. Sans importance pour une base de dev
+  jetable ; avancer la séquence si la cible continue de prendre des commandes.
+- **La mémoire est proportionnelle à la plus grosse table.** Chaque table est lue et écrite comme
+  un seul tableau (environ 1 Ko par ligne). Les tables EAV produit dominent : un client avec 2 000
+  produits distincts tire ~700 000 lignes, exportées en ~11 s sous une limite mémoire CLI de 10 Go ;
+  à garder en tête avec un `memory_limit` serré. Les requêtes, elles, sont découpées (voir plus
+  haut) et ne sont pas le facteur limitant.
+- **Les insertions se font ligne par ligne** (nécessaire pour capturer chaque id auto-incrémenté et
+  réécrire les liens) ; un import de plusieurs centaines de milliers de lignes prend des minutes,
+  pas des secondes.
+- **Les produits ébauches n'ont pas de stock MSI.** `inventory_source_item` (indexée par `sku`) n'est
+  pas cartographiée, un produit inséré parce que son `sku` manquait n'a donc pas de source item ;
+  les produits existants ne sont pas concernés.
 
-### Not synced by default (opt-in — not EAV value data)
+### Également synchronisé
 
-The following product tables are intentionally excluded; add them if a use case needs them:
-
-- **Custom options + per-store option pricing** (`catalog_product_option` → `_price`/`_title`/
-  `_type_value` → `_type_price`/`_type_title`). Multi-level children: declare each level as a `child`
-  of the one above with `skip_if_parent_reused` on `catalog_product_option`; the engine's cascade then
-  drops the grandchild rows too when the product was matched on the target.
-- **`ecomeu_familyset_tier_price`** — this store's custom per-store quantity-break pricing. Keyed by
-  the `familyset_code` product attribute value (not `product_id`), so it needs a dedicated
-  lookup-by-attribute-value step.
-- **Bundle selection pricing**, **media gallery** (references image files on disk), and product
-  **composition/placement** (`catalog_product_link*`, `catalog_product_super_*`,
-  `catalog_product_relation`, `catalog_category_product`) — the latter reference other products and
-  categories, expanding a per-customer export toward a full-catalog export.
-- **Order documents & extras** — `sales_invoice`/`sales_creditmemo`/`sales_shipment` (+ their
-  `_item`/`_comment`/`_track`/`_grid`), `sales_order_status_history`, `sales_order_tax` (+ `_tax_item`),
-  `sales_payment_transaction`, and `gift_message`. Each fits the existing patterns (`child` +
-  `references`; documents get `unique_key => ['increment_id','store_id']`; grids
-  `skip_if_parent_reused`). Also guest/multishipping/ephemeral: `quote_id_mask`, `quote_address_item`,
+- **Documents de commande et extras** : `sales_invoice`, `sales_shipment`, `sales_creditmemo` avec
+  leurs `_item`, `_comment`, `_grid` (et `sales_shipment_track`), `sales_order_status_history`,
+  `sales_order_tax` + `_item`, `sales_payment_transaction`. Tous enfants de la commande, ignorés
+  quand la commande a été mise en correspondance. Un document a son propre `increment_id` unique par
+  magasin, il est donc mis en correspondance comme une commande et, en `--mode=clone`, créé de force
+  avec un numéro suffixé que sa grille reflète.
+- **Messages cadeaux** (`gift_message`), enfant du client ; `gift_message_id` sur les paniers,
+  commandes et leurs lignes est réécrit.
+- **Extras de panier** : `quote_id_mask`, `quote_address_item` (lignes multi-expédition),
   `quote_shipping_rate`.
+- **Composition produit** (enfants du produit, ignorés quand il a été mis en correspondance, seul un
+  produit ébauche les reçoit) : options personnalisées avec prix / titres par magasin
+  (`catalog_product_option` → `_price` / `_title` / `_type_value` → `_type_price` / `_type_title`),
+  options / sélections / prix de sélection bundle, liens produit avec leurs attributs de position,
+  super-attributs / libellés / liens configurable, `catalog_product_relation`,
+  `catalog_category_product`. Un lien vers un produit ou une catégorie qui n'existe nulle part sur la
+  cible n'abandonne que cette ligne.
+- **Lignes de galerie média** (`catalog_product_entity_media_gallery` mise en correspondance par
+  chemin d'image, les lignes `_value`, `_value_to_entity` et `_value_video` pendues au produit). Les
+  fichiers image sur disque ne sont **pas** copiés.
+- **Prix dégressifs family-set** (`ecomeu_familyset_tier_price`) : un lookup sur `familyset_code`
+  rassemblé depuis les valeurs de l'attribut `family_set` des produits, mis en correspondance sur la
+  cible par son tuple unique (code, magasin, quantité, date). Ignoré sur une installation sans la
+  table.
 
-> **EAV `attribute_id` cross-DB caveat:** EAV value rows (customer, address, product) carry
-> `attribute_id`. Stock attributes share ids across standard installs, but a **custom** attribute can
-> have a different `attribute_id` in another database — importing its value rows there would misfile
-> them under the wrong attribute. When migrating custom attributes across environments, verify the
-> attribute ids line up (or use `scripts/db-sync-gui/`, which syncs the EAV attribute definitions).
+> **Réserve `attribute_id` EAV entre bases :** les lignes de valeurs EAV (client, adresse, produit)
+> portent `attribute_id`. Les attributs standard partagent leurs ids entre installations standard,
+> mais un attribut **personnalisé** peut avoir un `attribute_id` différent dans une autre base — y
+> importer ses lignes de valeurs les rangerait sous le mauvais attribut. Lors d'une migration
+> d'attributs personnalisés entre environnements, vérifier que les ids d'attributs coïncident (ou
+> utiliser `scripts/db-sync-gui/`, qui synchronise les définitions d'attributs EAV).

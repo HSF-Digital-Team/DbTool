@@ -36,14 +36,21 @@ class ProcessorProvider
      */
     public function get(?string $class): ?TableProcessorInterface
     {
-        if (empty($class)) {
+        if ($class === null || trim($class) === '') {
             return null;
         }
+        $class = ltrim(trim($class), '\\');
         if (!isset($this->instances[$class])) {
+            if (!class_exists($class)) {
+                throw new LocalizedException(new Phrase(
+                    'EcomEU_DbTool: processor class "%1" does not exist (check the "processor" field of the map).',
+                    [$class]
+                ));
+            }
             $instance = $this->objectManager->get($class);
             if (!$instance instanceof TableProcessorInterface) {
                 throw new LocalizedException(new Phrase(
-                    'Tool_DbTool: processor "%1" must implement %2.',
+                    'EcomEU_DbTool: processor "%1" must implement %2.',
                     [$class, TableProcessorInterface::class]
                 ));
             }

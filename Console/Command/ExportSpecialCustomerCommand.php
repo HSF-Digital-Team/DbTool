@@ -4,12 +4,9 @@ declare(strict_types=1);
 namespace EcomEU\DbTool\Console\Command;
 
 use EcomEU\DbTool\Model\Export\Exporter;
-use Magento\Framework\App\Area;
 use Magento\Framework\App\State;
-use Magento\Framework\Exception\LocalizedException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
-use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
@@ -18,10 +15,8 @@ use Throwable;
  *
  * bin/magento Tool:export:specialcustomer --customer_id=564321
  */
-class ExportSpecialCustomerCommand extends Command
+class ExportSpecialCustomerCommand extends AbstractSpecialCustomerCommand
 {
-    private const string OPTION_CUSTOMER_ID = 'customer_id';
-
     /**
      * Constructor
      *
@@ -31,32 +26,27 @@ class ExportSpecialCustomerCommand extends Command
      */
     public function __construct(
         private readonly Exporter $exporter,
-        private readonly State $appState,
+        State $appState,
         ?string $name = null
     ) {
-        parent::__construct($name);
+        parent::__construct($appState, $name);
     }
 
     /**
-     * Conf
+     * Configure
      *
      * @return void
      */
     protected function configure(): void
     {
         $this->setName('Tool:export:specialcustomer')
-            ->setDescription('Export all data for a customer to var/export/specialcustomer/<customer_id>/*.csv')
-            ->addOption(
-                self::OPTION_CUSTOMER_ID,
-                null,
-                InputOption::VALUE_REQUIRED,
-                'The customer entity id to export'
-            );
+            ->setDescription('Export all data for a customer to var/export/specialcustomer/<customer_id>/*.csv');
+        $this->addCustomerIdOption('The customer entity id to export');
         parent::configure();
     }
 
     /**
-     * Exe
+     * Execute
      *
      * @param InputInterface $input
      * @param OutputInterface $output
@@ -64,12 +54,10 @@ class ExportSpecialCustomerCommand extends Command
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $customerId = $input->getOption(self::OPTION_CUSTOMER_ID);
-        if ($customerId === null || !ctype_digit((string)$customerId)) {
-            $output->writeln('<error>--customer_id is required and must be a positive integer.</error>');
+        $customerId = $this->readCustomerId($input, $output);
+        if ($customerId === null) {
             return Command::FAILURE;
         }
-        $customerId = (int)$customerId;
 
         $this->ensureAreaCode();
 
@@ -108,18 +96,5 @@ class ExportSpecialCustomerCommand extends Command
         }
 
         return Command::SUCCESS;
-    }
-
-    /**
-     * Some resource models expect an area code when invoked from CLI.
-     */
-    private function ensureAreaCode(): void
-    {
-        try {
-            // Throws when no area code has been set yet.
-            $this->appState->getAreaCode();
-        } catch (LocalizedException $e) {
-            $this->appState->setAreaCode(Area::AREA_ADMINHTML);
-        }
     }
 }

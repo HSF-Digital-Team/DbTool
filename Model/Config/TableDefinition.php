@@ -12,9 +12,18 @@ use EcomEU\DbTool\Api\Data\TableDefinitionInterface;
  *
  * Instantiate through the generated TableDefinitionFactory:
  *     $factory->create(['data' => $rawRow]);
+ *
+ * Every field is validated once, in the constructor, so a malformed entry (from this module or
+ * injected through di.xml) fails at load time with the table and field named, never halfway
+ * through an export or import.
  */
 class TableDefinition implements TableDefinitionInterface
 {
+    /** Fields that must be arrays when present. */
+    private const array ARRAY_FIELDS = [
+        'filter', 'lookup_sources', 'requires', 'references', 'unique_key', 'clone_regenerate', 'clone_mirror',
+    ];
+
     /**
      * @param array<string,mixed> $data
      * @throws LocalizedException
@@ -32,55 +41,96 @@ class TableDefinition implements TableDefinitionInterface
      */
     private function validate(): void
     {
-        if (empty($this->data['table'])) {
-            throw new LocalizedException(new Phrase('Tool_DbTool: a map entry is missing "table".'));
+        if (!isset($this->data['table']) || !is_string($this->data['table']) || trim($this->data['table']) === '') {
+            throw new LocalizedException(new Phrase('EcomEU_DbTool: a map entry is missing "table".'));
+        }
+        $table = $this->data['table'];
+
+        foreach (self::ARRAY_FIELDS as $field) {
+            if (isset($this->data[$field]) && !is_array($this->data[$field])) {
+                $this->fail('"%2" must be an array.', [$table, $field]);
+            }
+        }
+        foreach (['primary_key', 'customer_column', 'parent', 'parent_key', 'foreign_key', 'lookup_column',
+                     'processor'] as $field) {
+            if (isset($this->data[$field]) && (!is_string($this->data[$field]) || trim($this->data[$field]) === '')) {
+                $this->fail('"%2" must be a non-empty string.', [$table, $field]);
+            }
         }
 
         $type = $this->data['relationship_type'] ?? null;
         if (!in_array($type, [self::RELATION_DIRECT, self::RELATION_CHILD, self::RELATION_LOOKUP], true)) {
-            throw new LocalizedException(new Phrase(
-                'Tool_DbTool: table "%1" has an invalid relationship_type "%2" '
-                . '(expected "direct", "child" or "lookup").',
-                [$this->data['table'], (string)$type]
-            ));
+            $this->fail(
+                'has an invalid relationship_type "%2" (expected "direct", "child" or "lookup").',
+                [$table, is_scalar($type) ? (string)$type : get_debug_type($type)]
+            );
         }
 
         if ($type === self::RELATION_DIRECT && empty($this->data['customer_column'])) {
-            throw new LocalizedException(new Phrase(
-                'Tool_DbTool: direct table "%1" is missing "customer_column".',
-                [$this->data['table']]
-            ));
+            $this->fail('is direct but is missing "customer_column".', [$table]);
         }
 
         if ($type === self::RELATION_CHILD) {
             foreach (['parent', 'parent_key', 'foreign_key'] as $required) {
                 if (empty($this->data[$required])) {
-                    throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: child table "%1" is missing "%2".',
-                        [$this->data['table'], $required]
-                    ));
+                    $this->fail('is a child but is missing "%2".', [$table, $required]);
                 }
             }
         }
 
         if ($type === self::RELATION_LOOKUP && empty($this->data['lookup_sources'])) {
-            throw new LocalizedException(new Phrase(
-                'Tool_DbTool: lookup table "%1" is missing "lookup_sources".',
-                [$this->data['table']]
-            ));
+            $this->fail('is a lookup but is missing "lookup_sources".', [$table]);
+        }
+        foreach ($this->data['lookup_sources'] ?? [] as $source) {
+            if (!is_array($source) || empty($source['table']) || empty($source['column'])) {
+                $this->fail('has a "lookup_sources" entry without table/column.', [$table]);
+            }
+        }
+
+        foreach ($this->data['requires'] ?? [] as $requirement) {
+            if (!is_array($requirement) || empty($requirement['column']) || empty($requirement['table'])
+                || empty($requirement['key'])
+            ) {
+                $this->fail('has a "requires" entry without column/table/key.', [$table]);
+            }
+        }
+
+        foreach ($this->data['references'] ?? [] as $reference) {
+            if (!is_array($reference) || empty($reference['column']) || empty($reference['table'])) {
+                $this->fail('has a "references" entry without column/table.', [$table]);
+            }
+        }
+
+        foreach ($this->data['unique_key'] ?? [] as $column) {
+            if (!is_string($column) || trim($column) === '') {
+                $this->fail('has a "unique_key" entry that is not a column name.', [$table]);
+            }
         }
 
         $strategies = [self::STRATEGY_EMAIL_SUFFIX, self::STRATEGY_SUFFIX];
         foreach (['clone_regenerate', 'clone_mirror'] as $field) {
             foreach ($this->normalizeStrategyMap($field) as $column => $strategy) {
                 if (!in_array($strategy, $strategies, true)) {
-                    throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: table "%1" %2 column "%3" has an unknown strategy "%4" (expected "%5").',
-                        [$this->data['table'], $field, $column, $strategy, implode('" or "', $strategies)]
-                    ));
+                    $this->fail(
+                        '%2 column "%3" has an unknown strategy "%4" (expected "%5").',
+                        [$table, $field, $column, $strategy, implode('" or "', $strategies)]
+                    );
                 }
             }
         }
+    }
+
+    /**
+     * Throw the standard "table X ..." validation error.
+     *
+     * @param string $message with %1 = table and further placeholders from $arguments
+     * @param array<int,string> $arguments
+     * @return never
+     * @throws LocalizedException
+     */
+    private function fail(string $message, array $arguments): never
+    {
+        throw new LocalizedException(new Phrase('EcomEU_DbTool: table "%1" ' . $message, $arguments));
     }
 
     /**
@@ -97,7 +147,7 @@ class TableDefinition implements TableDefinitionInterface
         }
         $normalized = [];
         foreach ($map as $column => $strategy) {
-            $normalized[(string)$column] = (string)$strategy;
+            $normalized[(string)$column] = is_scalar($strategy) ? (string)$strategy : get_debug_type($strategy);
         }
         return $normalized;
     }
@@ -217,7 +267,7 @@ class TableDefinition implements TableDefinitionInterface
     /**
      * GetLookupSources
      *
-     * @return array<int,array{table:string,column:string}>
+     * @return array<int,array{table:string,column:string,eav_attribute?:string}>
      */
     public function getLookupSources(): array
     {
@@ -228,13 +278,45 @@ class TableDefinition implements TableDefinitionInterface
         $normalized = [];
         foreach ($sources as $source) {
             if (!empty($source['table']) && !empty($source['column'])) {
-                $normalized[] = [
+                $entry = [
                     'table' => (string)$source['table'],
                     'column' => (string)$source['column'],
                 ];
+                if (!empty($source['eav_attribute'])) {
+                    $entry['eav_attribute'] = (string)$source['eav_attribute'];
+                }
+                $normalized[] = $entry;
             }
         }
         return $normalized;
+    }
+
+    /**
+     * GetLookupColumn
+     *
+     * @return string
+     */
+    public function getLookupColumn(): string
+    {
+        return (string)($this->data['lookup_column'] ?? $this->getPrimaryKey());
+    }
+
+    /**
+     * GetRequires
+     *
+     * @return array<int,array{column:string,table:string,key:string}>
+     */
+    public function getRequires(): array
+    {
+        $requires = [];
+        foreach ($this->data['requires'] ?? [] as $requirement) {
+            $requires[] = [
+                'column' => (string)$requirement['column'],
+                'table' => (string)$requirement['table'],
+                'key' => (string)$requirement['key'],
+            ];
+        }
+        return $requires;
     }
 
     /**
@@ -249,8 +331,8 @@ class TableDefinition implements TableDefinitionInterface
         // Auto-derive the child -> parent foreign-key reference.
         if ($this->getRelationshipType() === self::RELATION_CHILD) {
             $references[] = [
-                'column' => $this->getForeignKey(),
-                'table' => $this->getParent(),
+                'column' => (string)$this->getForeignKey(),
+                'table' => (string)$this->getParent(),
             ];
         }
 
