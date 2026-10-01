@@ -11,6 +11,7 @@ use Magento\Framework\Filesystem\Directory\WriteInterface;
 use Magento\Framework\Filesystem\Driver\File as FileDriver;
 use Magento\Framework\Phrase;
 use Magento\Framework\Filesystem\Glob;
+use Stringable;
 use ZipArchive;
 
 /**
@@ -58,7 +59,9 @@ class CsvStorage
     /**
      * PrepareExportDir
      *
-     * (Re)create an empty export directory for the customer and return its absolute path.
+     * (Re)create an empty export directory for the customer and return its absolute path. A zip
+     * left by a previous run is removed too, so a failed export never leaves a stale archive that
+     * looks current.
      *
      * @param int $customerId
      * @return string
@@ -66,17 +69,15 @@ class CsvStorage
      */
     public function prepareExportDir(int $customerId): string
     {
+        $this->removeExportDir($customerId);
         $relDir = self::EXPORT_BASE . '/' . $customerId;
         $var = $this->getVarDirectory();
-        if ($var->isExist($relDir)) {
-            $var->delete($relDir);
-        }
         $var->create($relDir);
         return $var->getAbsolutePath($relDir);
     }
 
     /**
-     * Remove the customer's export directory (used when an export turns out empty).
+     * Remove the customer's export directory and zip (used when an export fails or turns out empty).
      *
      * @param int $customerId
      * @return void
@@ -84,10 +85,11 @@ class CsvStorage
      */
     public function removeExportDir(int $customerId): void
     {
-        $relDir = self::EXPORT_BASE . '/' . $customerId;
         $var = $this->getVarDirectory();
-        if ($var->isExist($relDir)) {
-            $var->delete($relDir);
+        foreach ([self::EXPORT_BASE . '/' . $customerId, self::EXPORT_BASE . '/' . $customerId . '.zip'] as $path) {
+            if ($var->isExist($path)) {
+                $var->delete($path);
+            }
         }
     }
 
@@ -105,7 +107,7 @@ class CsvStorage
     {
         if (!class_exists(ZipArchive::class)) {
             throw new LocalizedException(new Phrase(
-                'Tool_DbTool: the PHP zip extension (ext-zip) is required to create the export archive.'
+                'EcomEU_DbTool: the PHP zip extension (ext-zip) is required to create the export archive.'
             ));
         }
 
@@ -113,14 +115,30 @@ class CsvStorage
         $sourceDir = $var->getAbsolutePath(self::EXPORT_BASE . '/' . $customerId);
         $zipPath = $var->getAbsolutePath(self::EXPORT_BASE . '/' . $customerId . '.zip');
 
+        $files = Glob::glob($sourceDir . '/*.csv') ?: [];
+        if ($files === []) {
+            throw new LocalizedException(new Phrase(
+                'EcomEU_DbTool: no CSV to archive in %1 (export first).',
+                [$sourceDir]
+            ));
+        }
+
         $zip = new ZipArchive();
         if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
-            throw new LocalizedException(new Phrase('Tool_DbTool: cannot create zip archive: %1', [$zipPath]));
+            throw new LocalizedException(new Phrase('EcomEU_DbTool: cannot create zip archive: %1', [$zipPath]));
         }
-        foreach (Glob::glob($sourceDir . '/*.csv') ?: [] as $file) {
-            $zip->addFile($file, substr($file, strlen($sourceDir) + 1));
+        foreach ($files as $file) {
+            if (!$zip->addFile($file, substr($file, strlen($sourceDir) + 1))) {
+                $zip->close();
+                throw new LocalizedException(new Phrase('EcomEU_DbTool: cannot add %1 to the zip archive.', [$file]));
+            }
         }
-        $zip->close();
+        if (!$zip->close()) {
+            throw new LocalizedException(new Phrase(
+                'EcomEU_DbTool: cannot write zip archive %1: %2',
+                [$zipPath, $zip->getStatusString()]
+            ));
+        }
 
         return $zipPath;
     }
@@ -161,24 +179,52 @@ class CsvStorage
      * @param string[] $header
      * @param array<int,array<string,mixed>> $rows
      * @throws FileSystemException
+     * @throws LocalizedException
      */
     public function writeTable(string $absoluteDir, string $table, array $header, array $rows): void
     {
+        $this->assertHeader($header, $table);
         $file = $absoluteDir . '/' . $table . '.csv';
         $resource = $this->fileDriver->fileOpen($file, 'w');
         try {
             $this->putLine($resource, $header, $file);
-            foreach ($rows as $row) {
+            foreach ($rows as $index => $row) {
                 $line = [];
                 foreach ($header as $column) {
-                    $value = $row[$column] ?? null;
-                    $line[] = $value === null ? self::NULL_MARKER : (string)$value;
+                    $line[] = $this->toCell($row[$column] ?? null, $table, $column, (int)$index);
                 }
                 $this->putLine($resource, $line, $file);
             }
         } finally {
             $this->fileDriver->fileClose($resource);
         }
+    }
+
+    /**
+     * CSV cell for one value: NULL -> marker, scalars as text; anything else is a processor bug.
+     *
+     * @param mixed $value
+     * @param string $table
+     * @param string $column
+     * @param int $index
+     * @return string
+     * @throws LocalizedException
+     */
+    private function toCell(mixed $value, string $table, string $column, int $index): string
+    {
+        if ($value === null) {
+            return self::NULL_MARKER;
+        }
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        }
+        if (is_scalar($value) || $value instanceof Stringable) {
+            return (string)$value;
+        }
+        throw new LocalizedException(new Phrase(
+            'EcomEU_DbTool: %1 row %2 column "%3" holds a non-scalar value (%4) that cannot be written to CSV.',
+            [$table, $index, $column, get_debug_type($value)]
+        ));
     }
 
     /**
@@ -195,7 +241,7 @@ class CsvStorage
     {
         // phpcs:ignore Magento2.Functions.DiscouragedFunction
         if (fputcsv($resource, $line, self::DELIMITER, self::ENCLOSURE, self::ESCAPE) === false) {
-            throw new FileSystemException(new Phrase('Tool_DbTool: cannot write to %1', [$file]));
+            throw new FileSystemException(new Phrase('EcomEU_DbTool: cannot write to %1', [$file]));
         }
     }
 
@@ -205,12 +251,14 @@ class CsvStorage
      * Tolerates hand-edited files: blank lines are ignored, a short line is padded with NULLs and
      * extra cells beyond the header are dropped. The NULL_MARKER reads back as NULL; a plain empty
      * cell stays an empty string (the importer turns it into NULL only for nullable columns, which
-     * keeps files written before the marker existed importable).
+     * keeps files written before the marker existed importable). A header with an empty or
+     * duplicated column name is rejected: such a file would silently misfile values.
      *
      * @param string $absoluteDir
      * @param string $table
      * @return array<int,array<string,mixed>>|null
      * @throws FileSystemException
+     * @throws LocalizedException
      */
     public function readTable(string $absoluteDir, string $table): ?array
     {
@@ -229,7 +277,8 @@ class CsvStorage
                     continue;
                 }
                 if ($header === null) {
-                    $header = array_map('strval', $line);
+                    $header = array_map(static fn ($cell): string => trim((string)$cell), $line);
+                    $this->assertHeader($header, $table);
                     $width = count($header);
                     continue;
                 }
@@ -245,6 +294,37 @@ class CsvStorage
             $this->fileDriver->fileClose($resource);
         }
         return $rows;
+    }
+
+    /**
+     * Reject a header that could not map cells to columns unambiguously.
+     *
+     * @param string[] $header
+     * @param string $table
+     * @return void
+     * @throws LocalizedException
+     */
+    private function assertHeader(array $header, string $table): void
+    {
+        if ($header === []) {
+            throw new LocalizedException(new Phrase('EcomEU_DbTool: %1.csv has an empty header.', [$table]));
+        }
+        $seen = [];
+        foreach ($header as $column) {
+            if ($column === '') {
+                throw new LocalizedException(new Phrase(
+                    'EcomEU_DbTool: %1.csv has an empty column name in its header.',
+                    [$table]
+                ));
+            }
+            if (isset($seen[$column])) {
+                throw new LocalizedException(new Phrase(
+                    'EcomEU_DbTool: %1.csv names column "%2" twice in its header.',
+                    [$table, $column]
+                ));
+            }
+            $seen[$column] = true;
+        }
     }
 
     /**

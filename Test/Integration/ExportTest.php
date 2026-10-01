@@ -47,8 +47,29 @@ class ExportTest extends AbstractDbToolTestCase
             'sales_order_item' => 2,
             'sales_order_address' => 2,
             'sales_order_payment' => 1,
+            'sales_payment_transaction' => 1,
+            'sales_order_status_history' => 1,
+            'sales_order_tax' => 1,
+            'sales_order_tax_item' => 1,
+            'sales_invoice' => 1,
+            'sales_invoice_item' => 1,
+            'sales_invoice_grid' => 1,
+            'sales_shipment' => 1,
+            'sales_shipment_item' => 1,
+            'sales_shipment_track' => 1,
+            'sales_shipment_grid' => 1,
+            'sales_creditmemo' => 0,
+            'gift_message' => 1,
+            'quote_id_mask' => 1,
+            'quote_shipping_rate' => 1,
+            'catalog_product_option' => 1,
+            'catalog_product_option_title' => 1,
+            'catalog_product_option_price' => 1,
             'customer_group' => 1,
         ];
+        if ($this->fixture->familySetCode !== null) {
+            $expected['ecomeu_familyset_tier_price'] = 1;
+        }
         foreach ($expected as $table => $count) {
             self::assertSame($count, $result['tables'][$table], "$table row count");
             self::assertCount($count, $this->storage->readTable($result['directory'], $table) ?? []);
@@ -97,6 +118,22 @@ class ExportTest extends AbstractDbToolTestCase
         self::assertSame($csvCount, $zip->numFiles, 'one zip entry per CSV');
         self::assertNotFalse($zip->locateName('customer_entity.csv'), 'flat entry names');
         $zip->close();
+    }
+
+    /**
+     * A new export removes the zip of the previous run, so a stale archive never looks current.
+     *
+     * @return void
+     */
+    public function testExportRemovesTheStaleZip(): void
+    {
+        $this->exportCustomer($this->fixture->customerId);
+        $zipPath = $this->exporter->zip($this->fixture->customerId);
+        self::assertFileExists($zipPath);
+
+        $this->exportCustomer($this->fixture->customerId);
+
+        self::assertFileDoesNotExist($zipPath);
     }
 
     /**

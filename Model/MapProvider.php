@@ -18,9 +18,9 @@ use Magento\Framework\Phrase;
  * can also tweak or disable a stock table.
  *
  * The merged map is validated once: every parent / reference / lookup source must name a mapped
- * table, and the priorities must order parents before children (export AND import) and lookup
- * sources before the lookup table (export), otherwise the engine would silently produce dangling
- * links or empty CSVs.
+ * table, a "requires" link must name an UNMAPPED one, no table may be its own parent, and the
+ * priorities must order parents before children (export AND import) and lookup sources before the
+ * lookup table (export), otherwise the engine would silently produce dangling links or empty CSVs.
  */
 class MapProvider implements MapProviderInterface
 {
@@ -32,7 +32,7 @@ class MapProvider implements MapProviderInterface
      *
      * @param CustomerMap $customerMap
      * @param TableDefinitionFactory $definitionFactory
-     * @param array<string,array<string,mixed>> $tables Extra/override raw entries injected via di.xml.
+     * @param array<string,mixed> $tables Extra/override raw entries injected via di.xml (each an array).
      */
     public function __construct(
         private readonly CustomerMap $customerMap,
@@ -84,13 +84,19 @@ class MapProvider implements MapProviderInterface
         if ($this->definitions === null) {
             $merged = array_replace($this->customerMap->get(), $this->tables);
             $definitions = [];
-            foreach ($merged as $raw) {
+            foreach ($merged as $key => $raw) {
+                if (!is_array($raw)) {
+                    throw new LocalizedException(new Phrase(
+                        'EcomEU_DbTool: map entry "%1" must be an array (got %2).',
+                        [(string)$key, get_debug_type($raw)]
+                    ));
+                }
                 $definitions[] = $this->definitionFactory->create(['data' => $raw]);
             }
             $this->validate($definitions);
             $this->definitions = $definitions;
         }
-        // Return a copy so callers can sort in place without mutating the cache.
+        // PHP arrays are copied on return, so callers can sort without mutating the cache.
         return $this->definitions;
     }
 
@@ -107,7 +113,7 @@ class MapProvider implements MapProviderInterface
         foreach ($definitions as $definition) {
             if (isset($byTable[$definition->getTable()])) {
                 throw new LocalizedException(new Phrase(
-                    'Tool_DbTool: table "%1" is mapped twice.',
+                    'EcomEU_DbTool: table "%1" is mapped twice.',
                     [$definition->getTable()]
                 ));
             }
@@ -118,22 +124,29 @@ class MapProvider implements MapProviderInterface
             $table = $definition->getTable();
 
             if ($definition->getRelationshipType() === TableDefinitionInterface::RELATION_CHILD) {
+                if ($definition->getParent() === $table) {
+                    throw new LocalizedException(new Phrase(
+                        'EcomEU_DbTool: child table "%1" cannot be its own parent '
+                        . '(declare a self-link as a "references" entry instead).',
+                        [$table]
+                    ));
+                }
                 $parent = $byTable[$definition->getParent()] ?? null;
                 if ($parent === null) {
                     throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: child table "%1" names an unmapped parent "%2".',
+                        'EcomEU_DbTool: child table "%1" names an unmapped parent "%2".',
                         [$table, (string)$definition->getParent()]
                     ));
                 }
                 if ($definition->getExportPriority() <= $parent->getExportPriority()) {
                     throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: child table "%1" must have a higher export_priority than its parent "%2".',
+                        'EcomEU_DbTool: child table "%1" must have a higher export_priority than its parent "%2".',
                         [$table, $parent->getTable()]
                     ));
                 }
                 if ($definition->getImportPriority() <= $parent->getImportPriority()) {
                     throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: child table "%1" must have a higher import_priority than its parent "%2".',
+                        'EcomEU_DbTool: child table "%1" must have a higher import_priority than its parent "%2".',
                         [$table, $parent->getTable()]
                     ));
                 }
@@ -143,13 +156,13 @@ class MapProvider implements MapProviderInterface
                 $sourceDefinition = $byTable[$source['table']] ?? null;
                 if ($sourceDefinition === null) {
                     throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: lookup table "%1" names an unmapped lookup source "%2".',
+                        'EcomEU_DbTool: lookup table "%1" names an unmapped lookup source "%2".',
                         [$table, $source['table']]
                     ));
                 }
                 if ($definition->getExportPriority() <= $sourceDefinition->getExportPriority()) {
                     throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: lookup table "%1" must have a higher export_priority than its source "%2".',
+                        'EcomEU_DbTool: lookup table "%1" must have a higher export_priority than its source "%2".',
                         [$table, $source['table']]
                     ));
                 }
@@ -158,8 +171,18 @@ class MapProvider implements MapProviderInterface
             foreach ($definition->getReferences() as $reference) {
                 if (!isset($byTable[$reference['table']])) {
                     throw new LocalizedException(new Phrase(
-                        'Tool_DbTool: table "%1" column "%2" references an unmapped table "%3".',
+                        'EcomEU_DbTool: table "%1" column "%2" references an unmapped table "%3".',
                         [$table, $reference['column'], $reference['table']]
+                    ));
+                }
+            }
+
+            foreach ($definition->getRequires() as $requirement) {
+                if (isset($byTable[$requirement['table']])) {
+                    throw new LocalizedException(new Phrase(
+                        'EcomEU_DbTool: table "%1" column "%2" "requires" the mapped table "%3": '
+                        . 'declare it as a "references" entry instead, so the id is remapped.',
+                        [$table, $requirement['column'], $requirement['table']]
                     ));
                 }
             }

@@ -81,12 +81,32 @@ interface TableDefinitionInterface
 
     /**
      * For a LOOKUP relationship: where to gather this table's ids from, as a list of
-     * ['table' => another mapped table, 'column' => its column]. Rows are those whose primary key
-     * appears in the union of those collected column values. Empty for non-lookup tables.
+     * ['table' => another mapped table, 'column' => its column]. Rows are those whose lookup column
+     * (the primary key unless "lookup_column" says otherwise) appears in the union of those collected
+     * column values. A source may carry 'eav_attribute' => '<entity_type_code>/<attribute_code>' to
+     * collect the column only from the rows of that EAV attribute (e.g. the value column of
+     * catalog_product_entity_varchar restricted to one attribute). Empty for non-lookup tables.
      *
-     * @return array<int,array{table:string,column:string}>
+     * @return array<int,array{table:string,column:string,eav_attribute?:string}>
      */
     public function getLookupSources(): array;
+
+    /**
+     * For a LOOKUP relationship: the column matched against the collected values.
+     *
+     * Defaults to the primary key; a table keyed by a business value (a code) names that column instead.
+     */
+    public function getLookupColumn(): string;
+
+    /**
+     * Rows of an UNMAPPED table this table's rows depend on, each ['column' => local column,
+     * 'table' => unmapped table, 'key' => its key column] (e.g. catalog_category_product needs its
+     * category). On import a row whose required row does not exist on the target is dropped (or
+     * the column nulled when nullable) instead of failing on the foreign key.
+     *
+     * @return array<int,array{column:string,table:string,key:string}>
+     */
+    public function getRequires(): array;
 
     /**
      * Foreign-key for the columns that must be remapped on import, each ['column' => local column,

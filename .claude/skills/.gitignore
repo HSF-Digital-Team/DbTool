@@ -1,0 +1,6 @@
+# Managed by venta-ai-tools (install-venta-skill.sh).
+# These entries are symlinks or marked copies into the installed
+# package; the installer recreates them. Your own skills are
+# unaffected as long as they are not named venta-* or hyva-*.
+venta-*
+hyva-*

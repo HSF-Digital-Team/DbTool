@@ -4,14 +4,13 @@
     "type": "magento2-module",
     "require": {
         "php": ">=8.3",
-        "magento/framework": "*",
-        "magento/magento-coding-standard": "*"
+        "magento/framework": "*"
     },
     "require-dev": {
         "bitexpert/phpstan-magento": "^0.13",
         "phpstan/extension-installer": "^1.3",
         "phpstan/phpstan": "^1.9",
-        "phpunit/phpunit": "^9.5 || ^10 || ^11 || ^12",
+        "phpunit/phpunit": "^10 || ^11 || ^12",
         "magento/module-catalog": "*",
         "magento/module-eav": "*",
         "magento/module-store": "*",
@@ -20,7 +19,11 @@
         "magento/module-cms": "*",
         "magento/module-customer": "*",
         "magento/module-config": "*",
-        "psr/log": "*"
+        "psr/log": "*",
+        "magento/magento-coding-standard": "*"
+    },
+    "suggest": {
+        "ext-zip": "Required to bundle an export into var/export/specialcustomer/<id>.zip"
     },
     "config": {
         "allow-plugins": {
